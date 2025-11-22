@@ -1,0 +1,67 @@
+{
+  "project_info": {
+    "project_number": "599316604106",
+    "project_id": "talka-52eb5",
+    "storage_bucket": "talka-52eb5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:599316604106:android:67de78077f4237dc2b8033",
+        "android_client_info": {
+          "package_name": "com.example.myapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBA1wI-NsHg_PicunTF18U_vedDZicISSo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:599316604106:android:f1b18e9700fbf2022b8033",
+        "android_client_info": {
+          "package_name": "com.prerevise.talka"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBA1wI-NsHg_PicunTF18U_vedDZicISSo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:599316604106:android:ba047145e837ff922b8033",
+        "android_client_info": {
+          "package_name": "com.prerevise.talka.talka"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBA1wI-NsHg_PicunTF18U_vedDZicISSo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
