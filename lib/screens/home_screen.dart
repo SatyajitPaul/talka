@@ -5,6 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'onboarding_screen.dart';
+import 'learning_screen.dart';
+import 'dictionary_screen.dart';
+import 'profile_screen.dart';
 
 // Language options (you can expand this list)
 const Map<String, String> languageOptions = {
@@ -27,6 +31,7 @@ class _HomeScreenState extends State<HomeScreen> {
   late String nativeLangCode = 'en';
   late String targetLangCode = 'ta';
   bool _isLoading = true;
+  int _currentIndex = 0;
 
   @override
   void initState() {
@@ -40,8 +45,12 @@ class _HomeScreenState extends State<HomeScreen> {
     final savedTarget = prefs.getString('target_language') ?? 'ta';
 
     // Validate against known languages
-    nativeLangCode = languageOptions.containsKey(savedNative) ? savedNative : 'en';
-    targetLangCode = languageOptions.containsKey(savedTarget) ? savedTarget : 'ta';
+    nativeLangCode = languageOptions.containsKey(savedNative)
+        ? savedNative
+        : 'en';
+    targetLangCode = languageOptions.containsKey(savedTarget)
+        ? savedTarget
+        : 'ta';
 
     if (mounted) {
       setState(() {
@@ -63,19 +72,41 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _logout(BuildContext context) async {
-    await GoogleSignIn().signOut();
-    await FirebaseAuth.instance.signOut();
-    if (!context.mounted) return;
-    Navigator.of(context).pushNamedAndRemoveUntil('/splash', (route) => false);
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      await GoogleSignIn().signOut();
+      await FirebaseAuth.instance.signOut();
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Signed out successfully')));
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const OnboardingScreen()),
+        (route) => false,
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Sign out failed: $e')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
   }
 
   void _showLanguageSelector() {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       backgroundColor: Theme.of(context).colorScheme.background,
       builder: (context) {
         String selectedNative = nativeLangCode;
@@ -95,26 +126,23 @@ class _HomeScreenState extends State<HomeScreen> {
               Text(
                 'Choose Languages',
                 style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: Theme.of(context).colorScheme.onBackground,
-                    ),
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).colorScheme.onBackground,
+                ),
               ),
               const SizedBox(height: 8),
               Text(
                 'Select your native language and the language you want to learn.',
-                style: TextStyle(
-                  color: const Color(0xFF6c757d),
-                  fontSize: 14,
-                ),
+                style: TextStyle(color: const Color(0xFF6c757d), fontSize: 14),
               ),
               const SizedBox(height: 24),
 
               // Native Language Dropdown
               Text(
                 'I speak:',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 8),
               DropdownButtonFormField<String>(
@@ -128,10 +156,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
                 items: languageOptions.entries.map((e) {
-                  return DropdownMenuItem(
-                    value: e.key,
-                    child: Text(e.value),
-                  );
+                  return DropdownMenuItem(value: e.key, child: Text(e.value));
                 }).toList(),
                 onChanged: (value) {
                   if (value != null) {
@@ -145,9 +170,9 @@ class _HomeScreenState extends State<HomeScreen> {
               // Target Language Dropdown
               Text(
                 'I want to learn:',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 8),
               DropdownButtonFormField<String>(
@@ -161,10 +186,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
                 items: languageOptions.entries.map((e) {
-                  return DropdownMenuItem(
-                    value: e.key,
-                    child: Text(e.value),
-                  );
+                  return DropdownMenuItem(value: e.key, child: Text(e.value));
                 }).toList(),
                 onChanged: (value) {
                   if (value != null) {
@@ -182,7 +204,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   onPressed: () {
                     if (selectedNative == selectedTarget) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Languages must be different!')),
+                        const SnackBar(
+                          content: Text('Languages must be different!'),
+                        ),
                       );
                       return;
                     }
@@ -211,7 +235,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final user = FirebaseAuth.instance.currentUser!;
     final nativeLang = languageOptions[nativeLangCode] ?? 'English';
     final targetLang = languageOptions[targetLangCode] ?? 'Tamil';
-    final appBarTitle = 'Learning $targetLang with $nativeLang';
 
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.background,
@@ -267,116 +290,46 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : Padding(
-              padding: const EdgeInsets.all(24.0),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  // Profile Image with glow
-                  Stack(
-                    children: [
-                      CircleAvatar(
-                        radius: 70,
-                        backgroundColor: const Color(0xFF4361ee).withOpacity(0.15),
-                        child: CircleAvatar(
-                          radius: 64,
-                          backgroundImage: user.photoURL != null
-                              ? CachedNetworkImageProvider(user.photoURL!)
-                              : null,
-                          child: user.photoURL == null
-                              ? Icon(
-                                  Icons.person,
-                                  size: 60,
-                                  color: const Color(0xFF4361ee),
-                                )
-                              : null,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  Text(
-                    user.displayName ?? 'Language Learner',
-                    style: GoogleFonts.poppins(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: const Color(0xFF212529),
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    user.email ?? '',
-                    style: GoogleFonts.poppins(
-                      fontSize: 16,
-                      color: const Color(0xFF6c757d),
-                    ),
-                  ),
-                  const SizedBox(height: 32),
-
-                  // Language Card
-                  Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.05),
-                          blurRadius: 10,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      children: [
-                        Text(
-                          'Current Learning Path',
-                          style: GoogleFonts.poppins(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w600,
-                            color: const Color(0xFF3f37c9),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Text.rich(
-                          TextSpan(
-                            children: [
-                              TextSpan(
-                                text: nativeLang,
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                              const TextSpan(text: ' → '),
-                              TextSpan(
-                                text: targetLang,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF4361ee),
-                                ),
-                              ),
-                            ],
-                          ),
-                          textAlign: TextAlign.center,
-                          style: GoogleFonts.poppins(
-                            fontSize: 16,
-                            color: const Color(0xFF212529),
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'Tap the language tag in the top-right to change your learning path.',
-                          textAlign: TextAlign.center,
-                          style: GoogleFonts.poppins(
-                            fontSize: 14,
-                            color: const Color(0xFF6c757d),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+          : IndexedStack(
+              index: _currentIndex,
+              children: [
+                LearningScreen(
+                  nativeLangCode: nativeLangCode,
+                  targetLangCode: targetLangCode,
+                ),
+                DictionaryScreen(
+                  nativeLangCode: nativeLangCode,
+                  targetLangCode: targetLangCode,
+                ),
+                ProfileScreen(user: user),
+              ],
             ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: (idx) {
+          if (!mounted) return;
+          setState(() {
+            _currentIndex = idx;
+          });
+        },
+        selectedItemColor: const Color(0xFF4361ee),
+        unselectedItemColor: const Color(0xFF6c757d),
+        showUnselectedLabels: true,
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.school_outlined),
+            label: 'Learning',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.menu_book_outlined),
+            label: 'Dictionary',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person_outline),
+            label: 'Profile',
+          ),
+        ],
+      ),
     );
   }
 }
