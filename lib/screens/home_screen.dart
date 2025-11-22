@@ -1,6 +1,7 @@
 // lib/screens/home_screen.dart
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,15 +11,7 @@ import 'learning_screen.dart';
 import 'dictionary_screen.dart';
 import 'profile_screen.dart';
 
-// Language options (you can expand this list)
-const Map<String, String> languageOptions = {
-  'en': 'English',
-  'ta': 'Tamil',
-  'hi': 'Hindi',
-  'bn': 'Bengali',
-  'te': 'Telugu',
-  'mr': 'Marathi',
-};
+// Language options are loaded from Firestore and cached locally.
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -32,11 +25,21 @@ class _HomeScreenState extends State<HomeScreen> {
   late String targetLangCode = 'ta';
   bool _isLoading = true;
   int _currentIndex = 0;
+  // languageOptions will be populated from Firestore (code -> display name)
+  Map<String, String> languageOptions = {'en': 'English', 'ta': 'Tamil'};
+
+  // full metadata cache (code -> map)
+  Map<String, Map<String, dynamic>> languageMeta = {};
 
   @override
   void initState() {
     super.initState();
-    _loadLanguages();
+    _initAll();
+  }
+
+  Future<void> _initAll() async {
+    await _loadLanguageOptions();
+    await _loadLanguages();
   }
 
   Future<void> _loadLanguages() async {
@@ -44,18 +47,95 @@ class _HomeScreenState extends State<HomeScreen> {
     final savedNative = prefs.getString('native_language') ?? 'en';
     final savedTarget = prefs.getString('target_language') ?? 'ta';
 
-    // Validate against known languages
-    nativeLangCode = languageOptions.containsKey(savedNative)
-        ? savedNative
-        : 'en';
-    targetLangCode = languageOptions.containsKey(savedTarget)
-        ? savedTarget
-        : 'ta';
+    // Validate against known languages (if not known yet, accept saved value; we'll revalidate after languages load)
+    nativeLangCode = savedNative;
+    targetLangCode = savedTarget;
+
+    // try to revalidate against loaded options
+    if (!languageOptions.containsKey(nativeLangCode))
+      nativeLangCode = languageOptions.containsKey('en')
+          ? 'en'
+          : languageOptions.keys.first;
+    if (!languageOptions.containsKey(targetLangCode))
+      targetLangCode = languageOptions.containsKey('ta')
+          ? 'ta'
+          : languageOptions.keys.where((k) => k != nativeLangCode).isNotEmpty
+          ? languageOptions.keys.firstWhere((k) => k != nativeLangCode)
+          : languageOptions.keys.first;
 
     if (mounted) {
       setState(() {
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _loadLanguageOptions() async {
+    final prefs = await SharedPreferences.getInstance();
+    // load cached options first
+    final cached = prefs.getString('language_options_cache');
+    if (cached != null) {
+      try {
+        final Map<String, dynamic> parsed = Map<String, dynamic>.from(
+          jsonDecode(cached),
+        );
+        final Map<String, String> opts = {};
+        final Map<String, Map<String, dynamic>> meta = {};
+        parsed.forEach((key, value) {
+          final m = Map<String, dynamic>.from(value as Map);
+          final display = (m['name'] ?? m['nativeName'] ?? key).toString();
+          opts[key] = display;
+          meta[key] = m;
+        });
+        if (mounted)
+          setState(() {
+            languageOptions = opts;
+            languageMeta = meta;
+          });
+      } catch (_) {}
+    }
+
+    // fetch latest from Firestore
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('languages')
+          .where('isActive', isEqualTo: true)
+          .get();
+      final Map<String, Map<String, dynamic>> meta = {};
+      final Map<String, String> opts = {};
+      for (final d in snap.docs) {
+        final m = Map<String, dynamic>.from(d.data());
+        final display = (m['name'] ?? m['nativeName'] ?? d.id).toString();
+        meta[d.id] = m;
+        opts[d.id] = display;
+      }
+      // persist cache
+      await prefs.setString('language_options_cache', jsonEncode(meta));
+      if (mounted) {
+        setState(() {
+          languageOptions = opts;
+          languageMeta = meta;
+        });
+      }
+
+      // Re-validate selected languages if necessary
+      final savedNative = prefs.getString('native_language') ?? nativeLangCode;
+      final savedTarget = prefs.getString('target_language') ?? targetLangCode;
+      if (mounted) {
+        setState(() {
+          nativeLangCode = opts.containsKey(savedNative)
+              ? savedNative
+              : (opts.containsKey('en') ? 'en' : opts.keys.first);
+          targetLangCode = opts.containsKey(savedTarget)
+              ? savedTarget
+              : (opts.keys.firstWhere(
+                  (k) => k != nativeLangCode,
+                  orElse: () => opts.keys.first,
+                ));
+        });
+      }
+    } catch (e) {
+      // ignore fetch errors; keep cached or defaults
     }
   }
 
@@ -233,8 +313,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser!;
-    final nativeLang = languageOptions[nativeLangCode] ?? 'English';
-    final targetLang = languageOptions[targetLangCode] ?? 'Tamil';
+    // display abbreviations in the appbar; values come from `languageOptions`
 
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.background,
@@ -298,6 +377,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   targetLangCode: targetLangCode,
                 ),
                 DictionaryScreen(
+                  user: user,
                   nativeLangCode: nativeLangCode,
                   targetLangCode: targetLangCode,
                 ),
