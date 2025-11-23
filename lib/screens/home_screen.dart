@@ -11,8 +11,6 @@ import 'learning_screen.dart';
 import 'dictionary_screen.dart';
 import 'profile_screen.dart';
 
-// Language options are loaded from Firestore and cached locally.
-
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -20,20 +18,28 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
   late String nativeLangCode = 'en';
   late String targetLangCode = 'ta';
   bool _isLoading = true;
   int _currentIndex = 0;
-  // languageOptions will be populated from Firestore (code -> display name)
   Map<String, String> languageOptions = {'en': 'English', 'ta': 'Tamil'};
-
-  // full metadata cache (code -> map)
   Map<String, Map<String, dynamic>> languageMeta = {};
+
+  late AnimationController _fabAnimationController;
+  late Animation<double> _fabAnimation;
 
   @override
   void initState() {
     super.initState();
+    _fabAnimationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _fabAnimation = CurvedAnimation(
+      parent: _fabAnimationController,
+      curve: Curves.easeInOut,
+    );
     _initAll();
   }
 
@@ -47,11 +53,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final savedNative = prefs.getString('native_language') ?? 'en';
     final savedTarget = prefs.getString('target_language') ?? 'ta';
 
-    // Validate against known languages (if not known yet, accept saved value; we'll revalidate after languages load)
     nativeLangCode = savedNative;
     targetLangCode = savedTarget;
 
-    // try to revalidate against loaded options
     if (!languageOptions.containsKey(nativeLangCode))
       nativeLangCode = languageOptions.containsKey('en')
           ? 'en'
@@ -67,12 +71,12 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _isLoading = false;
       });
+      _fabAnimationController.forward();
     }
   }
 
   Future<void> _loadLanguageOptions() async {
     final prefs = await SharedPreferences.getInstance();
-    // load cached options first
     final cached = prefs.getString('language_options_cache');
     if (cached != null) {
       try {
@@ -95,7 +99,6 @@ class _HomeScreenState extends State<HomeScreen> {
       } catch (_) {}
     }
 
-    // fetch latest from Firestore
     try {
       final snap = await FirebaseFirestore.instance
           .collection('languages')
@@ -109,7 +112,6 @@ class _HomeScreenState extends State<HomeScreen> {
         meta[d.id] = m;
         opts[d.id] = display;
       }
-      // persist cache
       await prefs.setString('language_options_cache', jsonEncode(meta));
       if (mounted) {
         setState(() {
@@ -118,7 +120,6 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
 
-      // Re-validate selected languages if necessary
       final savedNative = prefs.getString('native_language') ?? nativeLangCode;
       final savedTarget = prefs.getString('target_language') ?? targetLangCode;
       if (mounted) {
@@ -129,9 +130,9 @@ class _HomeScreenState extends State<HomeScreen> {
           targetLangCode = opts.containsKey(savedTarget)
               ? savedTarget
               : (opts.keys.firstWhere(
-                  (k) => k != nativeLangCode,
-                  orElse: () => opts.keys.first,
-                ));
+                (k) => k != nativeLangCode,
+            orElse: () => opts.keys.first,
+          ));
         });
       }
     } catch (e) {
@@ -148,11 +149,54 @@ class _HomeScreenState extends State<HomeScreen> {
         nativeLangCode = native;
         targetLangCode = target;
       });
+
+      // Show success feedback
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.white),
+              const SizedBox(width: 12),
+              Text('Languages updated successfully!'),
+            ],
+          ),
+          backgroundColor: Theme.of(context).colorScheme.primary,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          margin: const EdgeInsets.all(16),
+        ),
+      );
     }
   }
 
   void _logout(BuildContext context) async {
+    // Show confirmation dialog
+    final shouldLogout = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Sign Out'),
+        content: Text('Are you sure you want to sign out?'),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: Text('Sign Out'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldLogout != true) return;
     if (!mounted) return;
+
     setState(() {
       _isLoading = true;
     });
@@ -161,18 +205,33 @@ class _HomeScreenState extends State<HomeScreen> {
       await GoogleSignIn().signOut();
       await FirebaseAuth.instance.signOut();
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Signed out successfully')));
+
       Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const OnboardingScreen()),
-        (route) => false,
+        PageRouteBuilder(
+          pageBuilder: (context, animation, secondaryAnimation) => const OnboardingScreen(),
+          transitionsBuilder: (context, animation, secondaryAnimation, child) {
+            return FadeTransition(opacity: animation, child: child);
+          },
+        ),
+            (route) => false,
       );
     } catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Sign out failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.error_outline, color: Colors.white),
+              const SizedBox(width: 12),
+              Expanded(child: Text('Sign out failed. Please try again.')),
+            ],
+          ),
+          backgroundColor: Colors.red.shade600,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          margin: const EdgeInsets.all(16),
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -186,229 +245,540 @@ class _HomeScreenState extends State<HomeScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
       backgroundColor: Theme.of(context).colorScheme.background,
       builder: (context) {
         String selectedNative = nativeLangCode;
         String selectedTarget = targetLangCode;
 
-        return Padding(
-          padding: EdgeInsets.fromLTRB(
-            24,
-            32,
-            24,
-            MediaQuery.of(context).viewInsets.bottom + 24,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Choose Languages',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Theme.of(context).colorScheme.onBackground,
-                ),
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: EdgeInsets.fromLTRB(
+                24,
+                32,
+                24,
+                MediaQuery.of(context).viewInsets.bottom + 24,
               ),
-              const SizedBox(height: 8),
-              Text(
-                'Select your native language and the language you want to learn.',
-                style: TextStyle(color: const Color(0xFF6c757d), fontSize: 14),
-              ),
-              const SizedBox(height: 24),
-
-              // Native Language Dropdown
-              Text(
-                'I speak:',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 8),
-              DropdownButtonFormField<String>(
-                value: selectedNative,
-                decoration: InputDecoration(
-                  filled: true,
-                  fillColor: Colors.white,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-                items: languageOptions.entries.map((e) {
-                  return DropdownMenuItem(value: e.key, child: Text(e.value));
-                }).toList(),
-                onChanged: (value) {
-                  if (value != null) {
-                    selectedNative = value;
-                  }
-                },
-                dropdownColor: Colors.white,
-              ),
-              const SizedBox(height: 20),
-
-              // Target Language Dropdown
-              Text(
-                'I want to learn:',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 8),
-              DropdownButtonFormField<String>(
-                value: selectedTarget,
-                decoration: InputDecoration(
-                  filled: true,
-                  fillColor: Colors.white,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-                items: languageOptions.entries.map((e) {
-                  return DropdownMenuItem(value: e.key, child: Text(e.value));
-                }).toList(),
-                onChanged: (value) {
-                  if (value != null) {
-                    selectedTarget = value;
-                  }
-                },
-                dropdownColor: Colors.white,
-              ),
-              const SizedBox(height: 28),
-
-              // Save Button
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    if (selectedNative == selectedTarget) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Languages must be different!'),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Header with icon
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              Theme.of(context).colorScheme.primary,
+                              Theme.of(context).colorScheme.primary.withOpacity(0.7),
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(16),
                         ),
-                      );
-                      return;
-                    }
-                    _saveLanguages(selectedNative, selectedTarget);
-                    Navigator.of(context).pop(); // Close bottom sheet
-                  },
-                  child: const Text('Save & Continue'),
-                ),
+                        child: Icon(
+                          Icons.language_rounded,
+                          color: Colors.white,
+                          size: 28,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Choose Languages',
+                              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                                fontWeight: FontWeight.bold,
+                                color: Theme.of(context).colorScheme.onBackground,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Select the languages you want to use',
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: Theme.of(context).colorScheme.onBackground.withOpacity(0.6),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 32),
+
+                  // Native Language Section
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surface,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.outline.withOpacity(0.1),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.home_outlined,
+                              size: 20,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'I speak',
+                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        DropdownButtonFormField<String>(
+                          value: selectedNative,
+                          decoration: InputDecoration(
+                            filled: true,
+                            fillColor: Theme.of(context).colorScheme.background,
+                            prefixIcon: Icon(
+                              Icons.flag_outlined,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              borderSide: BorderSide.none,
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 16,
+                            ),
+                          ),
+                          items: languageOptions.entries.map((e) {
+                            return DropdownMenuItem(
+                              value: e.key,
+                              child: Text(
+                                e.value,
+                                style: Theme.of(context).textTheme.bodyLarge,
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: (value) {
+                            if (value != null) {
+                              setModalState(() {
+                                selectedNative = value;
+                              });
+                            }
+                          },
+                          dropdownColor: Theme.of(context).colorScheme.surface,
+                          icon: Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Swap Icon
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.swap_vert_rounded,
+                        color: Theme.of(context).colorScheme.primary,
+                        size: 24,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Target Language Section
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surface,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.outline.withOpacity(0.1),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.school_outlined,
+                              size: 20,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'I want to learn',
+                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        DropdownButtonFormField<String>(
+                          value: selectedTarget,
+                          decoration: InputDecoration(
+                            filled: true,
+                            fillColor: Theme.of(context).colorScheme.background,
+                            prefixIcon: Icon(
+                              Icons.flag_outlined,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              borderSide: BorderSide.none,
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 16,
+                            ),
+                          ),
+                          items: languageOptions.entries.map((e) {
+                            return DropdownMenuItem(
+                              value: e.key,
+                              child: Text(
+                                e.value,
+                                style: Theme.of(context).textTheme.bodyLarge,
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: (value) {
+                            if (value != null) {
+                              setModalState(() {
+                                selectedTarget = value;
+                              });
+                            }
+                          },
+                          dropdownColor: Theme.of(context).colorScheme.surface,
+                          icon: Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+
+                  // Action Buttons
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: Navigator.of(context).pop,
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
+                          child: const Text('Cancel'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        flex: 2,
+                        child: ElevatedButton(
+                          onPressed: () {
+                            if (selectedNative == selectedTarget) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Row(
+                                    children: [
+                                      Icon(Icons.warning_amber_rounded, color: Colors.white),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Text('Please select different languages'),
+                                      ),
+                                    ],
+                                  ),
+                                  backgroundColor: Colors.orange.shade600,
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  margin: const EdgeInsets.all(16),
+                                ),
+                              );
+                              return;
+                            }
+                            _saveLanguages(selectedNative, selectedTarget);
+                            Navigator.of(context).pop();
+                          },
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
+                          child: const Text('Save Changes'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-              const SizedBox(height: 16),
-              Center(
-                child: TextButton(
-                  onPressed: Navigator.of(context).pop,
-                  child: const Text('Cancel'),
-                ),
-              ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
   }
 
   @override
+  void dispose() {
+    _fabAnimationController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser!;
-    // display abbreviations in the appbar; values come from `languageOptions`
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
 
     return Scaffold(
-      backgroundColor: Theme.of(context).colorScheme.background,
+      backgroundColor: colorScheme.background,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        title: Text(
-          'Hi, ${user.displayName?.split(' ')[0] ?? 'Learner'}!',
-          style: GoogleFonts.poppins(
-            fontSize: 20,
-            fontWeight: FontWeight.w600,
-            color: const Color(0xFF3f37c9),
-          ),
+        scrolledUnderElevation: 0,
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    colorScheme.primary,
+                    colorScheme.primary.withOpacity(0.7),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(
+                Icons.waving_hand_rounded,
+                color: Colors.white,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Hello,',
+                  style: textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onBackground.withOpacity(0.6),
+                  ),
+                ),
+                Text(
+                  user.displayName?.split(' ')[0] ?? 'Learner',
+                  style: textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: colorScheme.onBackground,
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
         actions: [
-          // Language Indicator + Picker
-          GestureDetector(
-            onTap: _showLanguageSelector,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              margin: const EdgeInsets.only(right: 16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF4361ee).withOpacity(0.1),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '${languageOptions[targetLangCode]?.substring(0, 2).toUpperCase() ?? '??'}',
-                    style: TextStyle(
-                      color: const Color(0xFF4361ee),
-                      fontWeight: FontWeight.bold,
+          // Language Indicator
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: _showLanguageSelector,
+              borderRadius: BorderRadius.circular(20),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                margin: const EdgeInsets.only(right: 8),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      colorScheme.primary.withOpacity(0.15),
+                      colorScheme.primary.withOpacity(0.05),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: colorScheme.primary.withOpacity(0.2),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.translate_rounded,
+                      size: 18,
+                      color: colorScheme.primary,
                     ),
-                  ),
-                  const SizedBox(width: 4),
-                  const Icon(
-                    Icons.arrow_drop_down,
-                    size: 20,
-                    color: Color(0xFF4361ee),
-                  ),
-                ],
+                    const SizedBox(width: 6),
+                    Text(
+                      languageOptions[targetLangCode]?.substring(0, 2).toUpperCase() ?? '??',
+                      style: textTheme.labelLarge?.copyWith(
+                        color: colorScheme.primary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(width: 2),
+                    Icon(
+                      Icons.arrow_drop_down,
+                      size: 20,
+                      color: colorScheme.primary,
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
           // Logout
           IconButton(
             onPressed: () => _logout(context),
-            icon: const Icon(Icons.logout_outlined),
-            color: const Color(0xFF4361ee),
+            icon: Icon(Icons.logout_outlined),
+            color: colorScheme.primary,
+            tooltip: 'Sign out',
+            style: IconButton.styleFrom(
+              backgroundColor: colorScheme.primary.withOpacity(0.1),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
           ),
+          const SizedBox(width: 8),
         ],
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : IndexedStack(
-              index: _currentIndex,
-              children: [
-                LearningScreen(
-                  nativeLangCode: nativeLangCode,
-                  targetLangCode: targetLangCode,
-                ),
-                DictionaryScreen(
-                  user: user,
-                  nativeLangCode: nativeLangCode,
-                  targetLangCode: targetLangCode,
-                ),
-                ProfileScreen(user: user),
-              ],
+          ? Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: colorScheme.primary.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(colorScheme.primary),
+              ),
             ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (idx) {
-          if (!mounted) return;
-          setState(() {
-            _currentIndex = idx;
-          });
-        },
-        selectedItemColor: const Color(0xFF4361ee),
-        unselectedItemColor: const Color(0xFF6c757d),
-        showUnselectedLabels: true,
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.school_outlined),
-            label: 'Learning',
+            const SizedBox(height: 24),
+            Text(
+              'Loading your learning journey...',
+              style: textTheme.bodyLarge?.copyWith(
+                color: colorScheme.onBackground.withOpacity(0.6),
+              ),
+            ),
+          ],
+        ),
+      )
+          : IndexedStack(
+        index: _currentIndex,
+        children: [
+          LearningScreen(
+            nativeLangCode: nativeLangCode,
+            targetLangCode: targetLangCode,
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.menu_book_outlined),
-            label: 'Dictionary',
+          DictionaryScreen(
+            user: user,
+            nativeLangCode: nativeLangCode,
+            targetLangCode: targetLangCode,
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.person_outline),
-            label: 'Profile',
-          ),
+          ProfileScreen(user: user),
         ],
+      ),
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 20,
+              offset: const Offset(0, -5),
+            ),
+          ],
+        ),
+        child: BottomNavigationBar(
+          currentIndex: _currentIndex,
+          onTap: (idx) {
+            if (!mounted) return;
+            setState(() {
+              _currentIndex = idx;
+            });
+          },
+          selectedItemColor: colorScheme.primary,
+          unselectedItemColor: colorScheme.onBackground.withOpacity(0.5),
+          showUnselectedLabels: true,
+          type: BottomNavigationBarType.fixed,
+          elevation: 0,
+          backgroundColor: colorScheme.surface,
+          selectedLabelStyle: textTheme.labelMedium?.copyWith(
+            fontWeight: FontWeight.w700,
+          ),
+          unselectedLabelStyle: textTheme.labelMedium?.copyWith(
+            fontWeight: FontWeight.w500,
+          ),
+          items: [
+            BottomNavigationBarItem(
+              icon: Container(
+                padding: const EdgeInsets.all(8),
+                child: Icon(Icons.school_outlined),
+              ),
+              activeIcon: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: colorScheme.primary.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(Icons.school_rounded),
+              ),
+              label: 'Learning',
+            ),
+            BottomNavigationBarItem(
+              icon: Container(
+                padding: const EdgeInsets.all(8),
+                child: Icon(Icons.menu_book_outlined),
+              ),
+              activeIcon: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: colorScheme.primary.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(Icons.menu_book_rounded),
+              ),
+              label: 'Dictionary',
+            ),
+            BottomNavigationBarItem(
+              icon: Container(
+                padding: const EdgeInsets.all(8),
+                child: Icon(Icons.person_outline),
+              ),
+              activeIcon: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: colorScheme.primary.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(Icons.person_rounded),
+              ),
+              label: 'Profile',
+            ),
+          ],
+        ),
       ),
     );
   }
