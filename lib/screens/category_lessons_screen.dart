@@ -8,7 +8,7 @@ import 'dart:math' as math;
 import 'lesson_player_screen.dart';
 
 // TEMPORARY - for debugging
-import '../utils/firestore_debug_helper.dart';
+// import '../utils/firestore_debug_helper.dart';
 
 class CategoryLessonsScreen extends StatefulWidget {
   final String categoryId;
@@ -256,7 +256,7 @@ class _CategoryLessonsScreenState extends State<CategoryLessonsScreen>
     return Scaffold(
       backgroundColor: colorScheme.background,
       // TEMPORARY DEBUG BUTTON
-      floatingActionButton: FirestoreDebugHelper.buildDebugButton(context, widget.categoryId),
+      //floatingActionButton: FirestoreDebugHelper.buildDebugButton(context, widget.categoryId),
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(),
         slivers: [

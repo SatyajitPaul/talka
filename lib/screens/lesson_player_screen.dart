@@ -5,7 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// Import exercise widgets
+// Import all lesson/exercise screens
+import 'lessons/lesson_introduction_screen.dart';
+import 'lessons/introduction_exercise_screen.dart';
+import 'lessons/cultural_notes_screen.dart';
+import 'lessons/focus_sentences_screen.dart';
+import 'lessons/lesson_summary_screen.dart';
+
 import 'lessons/description_lesson.dart';
 import 'lessons/explanation_lesson.dart';
 import 'lessons/selection_lesson.dart';
@@ -40,10 +46,11 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
   bool _loading = true;
   String? _error;
   Map<String, dynamic>? _lessonData;
-  List<Map<String, dynamic>> _exercises = [];
-  int _currentExerciseIndex = 0;
-  Set<int> _completedExercises = {};
-  bool _lessonCompleted = false;
+
+  // Content items to display
+  List<Map<String, dynamic>> _contentItems = [];
+  int _currentIndex = 0;
+  Set<int> _completedIndices = {};
 
   late AnimationController _progressController;
   late AnimationController _slideController;
@@ -87,18 +94,12 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
       }
 
       final data = doc.data()!;
-      final exercises = List<Map<String, dynamic>>.from(data['exercises'] ?? []);
 
-      // Sort exercises by order
-      exercises.sort((a, b) {
-        final orderA = a['order'] as int? ?? 0;
-        final orderB = b['order'] as int? ?? 0;
-        return orderA.compareTo(orderB);
-      });
+      // Build content flow
+      _buildContentFlow(data);
 
       setState(() {
         _lessonData = data;
-        _exercises = exercises;
         _loading = false;
       });
 
@@ -112,69 +113,131 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
     }
   }
 
+  void _buildContentFlow(Map<String, dynamic> lessonData) {
+    final items = <Map<String, dynamic>>[];
+
+    // 1. Lesson Introduction
+    items.add({
+      'type': 'lesson_intro',
+      'data': lessonData,
+    });
+
+    // 2. Get exercises and cultural notes
+    final exercises = List<Map<String, dynamic>>.from(
+      lessonData['exercises'] ?? [],
+    );
+    final culturalNotes = List<Map<String, dynamic>>.from(
+      lessonData['culturalNotes'] ?? [],
+    );
+
+    // Sort exercises by order
+    exercises.sort((a, b) {
+      final orderA = a['order'] as int? ?? 0;
+      final orderB = b['order'] as int? ?? 0;
+      return orderA.compareTo(orderB);
+    });
+
+    // Sort cultural notes by order
+    culturalNotes.sort((a, b) {
+      final orderA = a['order'] as int? ?? 0;
+      final orderB = b['order'] as int? ?? 0;
+      return orderA.compareTo(orderB);
+    });
+
+    // 3. Interleave exercises with cultural notes
+    for (int i = 0; i < exercises.length; i++) {
+      // Add exercise
+      items.add({
+        'type': 'exercise',
+        'data': exercises[i],
+      });
+
+      // Check if there's a cultural note to display after this exercise
+      for (var note in culturalNotes) {
+        final displayAfter = note['displayAfterExercise'] as int? ?? -1;
+        final isActive = note['isActive'] as bool? ?? true;
+
+        if (isActive && displayAfter == i) {
+          items.add({
+            'type': 'cultural_note',
+            'data': note,
+          });
+        }
+      }
+    }
+
+    // 4. Focus Sentences (if available)
+    final focusSentences = List<Map<String, dynamic>>.from(
+      lessonData['focusSentences'] ?? [],
+    );
+    if (focusSentences.isNotEmpty) {
+      // Sort by order
+      focusSentences.sort((a, b) {
+        final orderA = a['order'] as int? ?? 0;
+        final orderB = b['order'] as int? ?? 0;
+        return orderA.compareTo(orderB);
+      });
+
+      // Filter active sentences
+      final activeSentences = focusSentences
+          .where((s) => s['isActive'] as bool? ?? true)
+          .toList();
+
+      if (activeSentences.isNotEmpty) {
+        items.add({
+          'type': 'focus_sentences',
+          'data': activeSentences,
+        });
+      }
+    }
+
+    // 5. Lesson Summary
+    items.add({
+      'type': 'lesson_summary',
+      'data': lessonData,
+    });
+
+    _contentItems = items;
+  }
+
   void _updateProgress() {
-    if (_exercises.isEmpty) return;
-    final progress = (_currentExerciseIndex + 1) / _exercises.length;
+    if (_contentItems.isEmpty) return;
+    final progress = (_currentIndex + 1) / _contentItems.length;
     _progressController.animateTo(progress);
   }
 
-  void _onExerciseComplete() {
+  void _onItemComplete() {
     setState(() {
-      _completedExercises.add(_currentExerciseIndex);
+      _completedIndices.add(_currentIndex);
     });
 
-    // Show celebration animation
-    _showCompletionFeedback();
-
-    // Auto-advance after a short delay
-    Future.delayed(const Duration(milliseconds: 1500), () {
+    // Auto-advance with a small delay
+    Future.delayed(const Duration(milliseconds: 500), () {
       if (mounted) {
         _goToNext();
       }
     });
   }
 
-  void _showCompletionFeedback() {
-    final messages = [
-      '🎉 Excellent!',
-      '⭐ Great job!',
-      '🌟 Well done!',
-      '🚀 Keep it up!',
-      '💪 You\'re doing great!',
-    ];
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          messages[_currentExerciseIndex % messages.length],
-          style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
-        ),
-        backgroundColor: widget.categoryColor,
-        duration: const Duration(milliseconds: 1200),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-    );
-  }
-
   Future<void> _goToNext() async {
-    if (_currentExerciseIndex < _exercises.length - 1) {
+    if (_currentIndex < _contentItems.length - 1) {
       await _slideController.reverse();
       setState(() {
-        _currentExerciseIndex++;
+        _currentIndex++;
       });
       _updateProgress();
       await _slideController.forward();
     } else {
+      // Lesson completed
       await _completeLesson();
     }
   }
 
   Future<void> _goToPrevious() async {
-    if (_currentExerciseIndex > 0) {
+    if (_currentIndex > 0) {
       await _slideController.reverse();
       setState(() {
-        _currentExerciseIndex--;
+        _currentIndex--;
       });
       _updateProgress();
       await _slideController.forward();
@@ -182,16 +245,14 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
   }
 
   Future<void> _completeLesson() async {
-    setState(() {
-      _lessonCompleted = true;
-    });
-
-    // Save completion to SharedPreferences
+    // Save completion
     final userId = FirebaseAuth.instance.currentUser?.uid;
     if (userId != null) {
       final prefs = await SharedPreferences.getInstance();
       final completedKey = 'completed_lessons_$userId';
-      final completed = Set<String>.from(prefs.getStringList(completedKey) ?? []);
+      final completed = Set<String>.from(
+        prefs.getStringList(completedKey) ?? [],
+      );
       completed.add(widget.lessonId);
       await prefs.setStringList(completedKey, completed.toList());
 
@@ -209,86 +270,22 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
       }
     }
 
-    // Show completion dialog
-    if (!mounted) return;
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => _buildCompletionDialog(),
-    );
-
+    // Navigate back
     if (!mounted) return;
     Navigator.pop(context);
-  }
-
-  Widget _buildCompletionDialog() {
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: widget.categoryColor.withOpacity(0.1),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                Icons.celebration_rounded,
-                size: 64,
-                color: widget.categoryColor,
-              ),
-            ),
-            const SizedBox(height: 24),
-            Text(
-              'Lesson Complete!',
-              style: GoogleFonts.poppins(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'You\'ve successfully completed this lesson. Keep up the great work!',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onBackground.withOpacity(0.7),
-              ),
-            ),
-            const SizedBox(height: 32),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: widget.categoryColor,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                ),
-                child: const Text(
-                  'Continue',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   Future<void> _exitLesson() async {
     final shouldExit = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
         title: const Text('Exit Lesson?'),
-        content: const Text('Your progress will be saved. Are you sure you want to exit?'),
+        content: const Text(
+          'Your progress will be saved. Are you sure you want to exit?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -321,7 +318,6 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
 
     return WillPopScope(
       onWillPop: () async {
@@ -349,7 +345,9 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
             height: 60,
             child: CircularProgressIndicator(
               strokeWidth: 6,
-              valueColor: AlwaysStoppedAnimation<Color>(widget.categoryColor),
+              valueColor: AlwaysStoppedAnimation<Color>(
+                widget.categoryColor,
+              ),
             ),
           ),
           const SizedBox(height: 24),
@@ -357,7 +355,10 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
             'Preparing your lesson...',
             style: TextStyle(
               fontSize: 16,
-              color: Theme.of(context).colorScheme.onBackground.withOpacity(0.7),
+              color: Theme.of(context)
+                  .colorScheme
+                  .onBackground
+                  .withOpacity(0.7),
             ),
           ),
         ],
@@ -390,7 +391,10 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
               _error ?? 'Unknown error occurred',
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: Theme.of(context).colorScheme.onBackground.withOpacity(0.6),
+                color: Theme.of(context)
+                    .colorScheme
+                    .onBackground
+                    .withOpacity(0.6),
               ),
             ),
             const SizedBox(height: 32),
@@ -406,7 +410,7 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
   }
 
   Widget _buildLessonContent() {
-    if (_exercises.isEmpty) {
+    if (_contentItems.isEmpty) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
@@ -420,13 +424,11 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
               ),
               const SizedBox(height: 24),
               const Text(
-                'No Exercises Available',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'This lesson doesn\'t have any exercises yet.',
-                textAlign: TextAlign.center,
+                'No Content Available',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ],
           ),
@@ -434,129 +436,201 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
       );
     }
 
-    final currentExercise = _exercises[_currentExerciseIndex];
+    final currentItem = _contentItems[_currentIndex];
+    final itemType = currentItem['type'] as String;
+
+    // For intro and summary, we don't show progress bar and navigation
+    final showNavigation = itemType != 'lesson_intro' &&
+        itemType != 'lesson_summary';
 
     return Column(
       children: [
-        // Custom App Bar with Progress
-        SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.close_rounded),
-                      onPressed: _exitLesson,
-                    ),
-                    Expanded(
-                      child: AnimatedBuilder(
-                        animation: _progressController,
-                        builder: (context, child) {
-                          return ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: LinearProgressIndicator(
-                              value: _progressController.value,
-                              backgroundColor: Colors.grey.shade200,
-                              valueColor: AlwaysStoppedAnimation<Color>(
-                                widget.categoryColor,
-                              ),
-                              minHeight: 8,
+        // Progress Bar (only if not intro or summary)
+        if (showNavigation)
+          SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded),
+                    onPressed: _exitLesson,
+                  ),
+                  Expanded(
+                    child: AnimatedBuilder(
+                      animation: _progressController,
+                      builder: (context, child) {
+                        return ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: LinearProgressIndicator(
+                            value: _progressController.value,
+                            backgroundColor: Colors.grey.shade200,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              widget.categoryColor,
                             ),
-                          );
-                        },
+                            minHeight: 8,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: widget.categoryColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '${_currentIndex + 1}/${_contentItems.length}',
+                      style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.bold,
+                        color: widget.categoryColor,
                       ),
                     ),
-                    const SizedBox(width: 16),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: widget.categoryColor.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        '${_currentExerciseIndex + 1}/${_exercises.length}',
-                        style: GoogleFonts.poppins(
-                          fontWeight: FontWeight.bold,
-                          color: widget.categoryColor,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
-        // Exercise Content
+
+        // Content
         Expanded(
           child: SlideTransition(
             position: _slideAnimation,
-            child: _buildExerciseWidget(currentExercise),
+            child: _buildContentWidget(currentItem),
           ),
         ),
-        // Navigation Buttons
-        _buildNavigationBar(),
+
+        // Navigation Buttons (only for exercises)
+        if (showNavigation && itemType == 'exercise')
+          _buildNavigationBar(),
       ],
     );
   }
 
-  Widget _buildExerciseWidget(Map<String, dynamic> exercise) {
-    final type = (exercise['type'] as String?)?.toLowerCase();
+  Widget _buildContentWidget(Map<String, dynamic> item) {
+    final type = item['type'] as String;
+    final data = item['data'];
 
     switch (type) {
+      case 'lesson_intro':
+        return LessonIntroductionScreen(
+          lessonData: data,
+          categoryColor: widget.categoryColor,
+          nativeLangCode: widget.nativeLangCode,
+          onContinue: _onItemComplete,
+        );
+
+      case 'cultural_note':
+        return CulturalNotesScreen(
+          culturalNote: data,
+          categoryColor: widget.categoryColor,
+          onContinue: _onItemComplete,
+        );
+
+      case 'focus_sentences':
+        return FocusSentencesScreen(
+          focusSentences: data,
+          categoryColor: widget.categoryColor,
+          onContinue: _onItemComplete,
+        );
+
+      case 'lesson_summary':
+        final exerciseCount = _contentItems
+            .where((item) => item['type'] == 'exercise')
+            .length;
+        return LessonSummaryScreen(
+          lessonData: _lessonData!,
+          categoryColor: widget.categoryColor,
+          exercisesCompleted: exerciseCount,
+          nativeLangCode: widget.nativeLangCode,
+          onFinish: _completeLesson,
+        );
+
+      case 'exercise':
+        return _buildExerciseWidget(data);
+
+      default:
+        return Center(
+          child: Text('Unknown content type: $type'),
+        );
+    }
+  }
+
+  Widget _buildExerciseWidget(Map<String, dynamic> exercise) {
+    final exerciseType = (exercise['type'] as String?)?.toLowerCase();
+
+    switch (exerciseType) {
+      case 'introduction':
+        return IntroductionExerciseScreen(
+          exercise: exercise,
+          categoryColor: widget.categoryColor,
+          onComplete: _onItemComplete,
+        );
+
       case 'description':
         return DescriptionLesson(
           lesson: exercise,
           nativeLangCode: widget.nativeLangCode,
           targetLangCode: widget.targetLangCode,
         );
+
       case 'explanation':
         return ExplanationLesson(lesson: exercise);
+
       case 'selection':
         return SelectionLesson(
           lesson: exercise,
-          onComplete: _onExerciseComplete,
+          onComplete: _onItemComplete,
         );
+
       case 'blanks':
         return BlanksLesson(
           lesson: exercise,
-          onComplete: _onExerciseComplete,
+          onComplete: _onItemComplete,
         );
+
       case 'mcq':
         return MCQLesson(
           lesson: exercise,
-          onComplete: _onExerciseComplete,
+          onComplete: _onItemComplete,
         );
+
       case 'multichoices':
         return MultiChoicesLesson(
           lesson: exercise,
-          onComplete: _onExerciseComplete,
+          onComplete: _onItemComplete,
         );
+
       case 'match':
         return MatchLesson(
           lesson: exercise,
-          onComplete: _onExerciseComplete,
+          onComplete: _onItemComplete,
         );
+
       case 'multimatch':
         return MultiMatchLesson(
           lesson: exercise,
-          onComplete: _onExerciseComplete,
+          onComplete: _onItemComplete,
         );
+
       case 'listen':
         return ListenLesson(
           lesson: exercise,
-          onComplete: _onExerciseComplete,
+          onComplete: _onItemComplete,
         );
+
       case 'speak':
         return SpeakLesson(
           lesson: exercise,
-          onComplete: _onExerciseComplete,
+          onComplete: _onItemComplete,
         );
+
       default:
         return Center(
           child: Padding(
@@ -576,7 +650,7 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Type: $type',
+                  'Type: $exerciseType',
                   style: TextStyle(color: Colors.grey.shade600),
                 ),
               ],
@@ -588,6 +662,7 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
 
   Widget _buildNavigationBar() {
     final colorScheme = Theme.of(context).colorScheme;
+    final canGoNext = _completedIndices.contains(_currentIndex);
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -605,7 +680,8 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
         top: false,
         child: Row(
           children: [
-            if (_currentExerciseIndex > 0)
+            if (_currentIndex > 0 &&
+                _contentItems[_currentIndex]['type'] == 'exercise')
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: _goToPrevious,
@@ -621,23 +697,17 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
                   ),
                 ),
               ),
-            if (_currentExerciseIndex > 0) const SizedBox(width: 12),
+            if (_currentIndex > 0 &&
+                _contentItems[_currentIndex]['type'] == 'exercise')
+              const SizedBox(width: 12),
             Expanded(
               flex: 2,
               child: ElevatedButton.icon(
-                onPressed: _completedExercises.contains(_currentExerciseIndex)
-                    ? _goToNext
-                    : null,
-                icon: Icon(
-                  _currentExerciseIndex == _exercises.length - 1
-                      ? Icons.check_rounded
-                      : Icons.arrow_forward_rounded,
-                ),
-                label: Text(
-                  _currentExerciseIndex == _exercises.length - 1
-                      ? 'Finish'
-                      : 'Next',
-                  style: const TextStyle(
+                onPressed: canGoNext ? _goToNext : null,
+                icon: const Icon(Icons.arrow_forward_rounded),
+                label: const Text(
+                  'Next',
+                  style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                   ),
