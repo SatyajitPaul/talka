@@ -4,7 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'dart:math' as math;
-import 'lesson_screen.dart'; // ← ADD THIS IMPORT
+import 'category_lessons_screen.dart';
 
 class LearningScreen extends StatefulWidget {
   final String nativeLangCode;
@@ -20,15 +20,20 @@ class LearningScreen extends StatefulWidget {
   State<LearningScreen> createState() => _LearningScreenState();
 }
 
-class _LearningScreenState extends State<LearningScreen> with TickerProviderStateMixin {
+class _LearningScreenState extends State<LearningScreen>
+    with TickerProviderStateMixin {
   bool _loading = true;
   String? _error;
   List<Map<String, dynamic>> _categories = [];
-  Map<String, List<Map<String, dynamic>>> _subByCat = {};
-  Map<String, int> _completedSubcategories = {};
+  Map<String, int> _categoryLessonCounts = {};
+  Map<String, int> _categoryCompletedCounts = {};
+  Set<String> _completedLessonIds = {};
   int _totalWordsLearned = 0;
+  int _currentStreak = 0;
+
   late AnimationController _headerAnimationController;
   late Animation<double> _headerFadeAnimation;
+  late AnimationController _floatingController;
 
   @override
   void initState() {
@@ -39,86 +44,160 @@ class _LearningScreenState extends State<LearningScreen> with TickerProviderStat
     );
     _headerFadeAnimation = CurvedAnimation(
       parent: _headerAnimationController,
-      curve: Curves.easeIn,
+      curve: Curves.easeOut,
     );
+    _floatingController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 3),
+    )..repeat(reverse: true);
+
     _loadData();
   }
 
   Future<void> _loadData() async {
-    await Future.wait([
-      _loadCategoriesAndSubcategories(),
-      _loadUserProgress(),
-    ]);
-    _headerAnimationController.forward();
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      // Load categories first
+      await _loadCategories();
+
+      // Then load user progress
+      await _loadUserProgress();
+
+      // Finally load lesson counts (needs categories to be loaded first)
+      await _loadLessonCounts();
+
+      _headerAnimationController.forward();
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+      });
+    } finally {
+      setState(() {
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _loadCategories() async {
+    final catSnap = await FirebaseFirestore.instance
+        .collection('categories')
+        .where('isActive', isEqualTo: true)
+        .orderBy('order')
+        .get();
+
+    final categories = catSnap.docs
+        .map((d) => {'id': d.id, ...d.data() as Map<String, dynamic>})
+        .toList();
+
+    debugPrint('📂 Loaded ${categories.length} categories:');
+    for (var cat in categories) {
+      debugPrint('   - ${cat['id']}: ${cat['name']} / ${cat['translations']}');
+    }
+
+    setState(() {
+      _categories = categories;
+    });
   }
 
   Future<void> _loadUserProgress() async {
     try {
       final userId = FirebaseAuth.instance.currentUser?.uid;
       if (userId == null) return;
+
       final doc = await FirebaseFirestore.instance
           .collection('userProgress')
           .doc(userId)
           .get();
+
       if (doc.exists) {
         final data = doc.data();
-        final completed = List<String>.from(data?['completedSubcategories'] ?? []);
+        final completedLessons = List<String>.from(data?['completedLessons'] ?? []);
         final completedWords = List<String>.from(data?['completedWords'] ?? []);
+
         setState(() {
-          _completedSubcategories = {for (var id in completed) id: 1};
+          _completedLessonIds = Set<String>.from(completedLessons);
           _totalWordsLearned = completedWords.length;
+          _currentStreak = data?['currentStreak'] ?? 0;
         });
       }
     } catch (e) {
-      // Silently handle errors for progress loading
+      debugPrint('Error loading progress: $e');
     }
   }
 
-  Future<void> _loadCategoriesAndSubcategories() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-      _categories = [];
-      _subByCat = {};
-    });
-    try {
-      final catSnap = await FirebaseFirestore.instance
-          .collection('categories')
-          .where('isActive', isEqualTo: true)
-          .orderBy('order')
-          .get();
-      final subSnap = await FirebaseFirestore.instance
-          .collection('subcategories')
-          .where('isActive', isEqualTo: true)
-          .orderBy('order')
-          .get();
-      final cats = catSnap.docs
-          .map((d) => {'id': d.id, ...d.data() as Map<String, dynamic>})
-          .toList();
-      final Map<String, List<Map<String, dynamic>>> grouped = {};
-      for (final s in subSnap.docs) {
-        final m = {'id': s.id, ...s.data() as Map<String, dynamic>};
-        final cid = (m['categoryId'] ?? '').toString();
-        grouped.putIfAbsent(cid, () => []).add(m);
+  Future<void> _loadLessonCounts() async {
+    final counts = <String, int>{};
+    final completedCounts = <String, int>{};
+
+    debugPrint('🔍 Starting to load lesson counts for ${_categories.length} categories');
+
+    for (final cat in _categories) {
+      final categoryId = cat['id'] as String;
+      final categoryName = _getLocalizedName(cat['translations'] as Map<String, dynamic>?);
+
+      debugPrint('📚 Loading lessons for category: $categoryName (ID: $categoryId)');
+
+      try {
+        // Try WITHOUT isActive filter first to see if lessons exist at all
+        final allLessonsSnap = await FirebaseFirestore.instance
+            .collection('lessons')
+            .where('categoryId', isEqualTo: categoryId)
+            .get();
+
+        debugPrint('   Found ${allLessonsSnap.docs.length} total lessons (without isActive filter)');
+
+        // Log details of each lesson
+        for (var doc in allLessonsSnap.docs) {
+          final lessonData = doc.data();
+          debugPrint('   - Lesson: ${doc.id}');
+          debugPrint('     title: ${lessonData['title']}');
+          debugPrint('     isActive: ${lessonData['isActive']}');
+          debugPrint('     categoryId: ${lessonData['categoryId']}');
+        }
+
+        // Now filter for active lessons
+        final activeLessons = allLessonsSnap.docs.where((doc) {
+          final data = doc.data();
+          final isActive = data['isActive'];
+          // Handle both boolean and null (treat null as true for backward compatibility)
+          return isActive == true || isActive == null;
+        }).toList();
+
+        final totalLessons = activeLessons.length;
+        final completedInCategory = activeLessons
+            .where((doc) => _completedLessonIds.contains(doc.id))
+            .length;
+
+        counts[categoryId] = totalLessons;
+        completedCounts[categoryId] = completedInCategory;
+
+        debugPrint('   ✅ Active lessons: $totalLessons, Completed: $completedInCategory');
+      } catch (e, stackTrace) {
+        debugPrint('   ❌ Error loading lesson count for category $categoryId: $e');
+        debugPrint('   Stack trace: $stackTrace');
+        counts[categoryId] = 0;
+        completedCounts[categoryId] = 0;
       }
-      setState(() {
-        _categories = cats;
-        _subByCat = grouped;
-        _loading = false;
-      });
-    } catch (e) {
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
     }
+
+    debugPrint('🎯 Final lesson counts: $counts');
+    debugPrint('🎯 Final completed counts: $completedCounts');
+
+    setState(() {
+      _categoryLessonCounts = counts;
+      _categoryCompletedCounts = completedCounts;
+    });
   }
 
-  String _localizedName(Map<String, dynamic>? map) {
-    if (map == null) return '';
+  String _getLocalizedName(Map<String, dynamic>? translations) {
+    if (translations == null) return '';
     try {
-      final names = Map<String, dynamic>.from(map);
-      return (names[widget.nativeLangCode] ?? names.values.first ?? '')
+      final trans = Map<String, dynamic>.from(translations);
+      return (trans[widget.nativeLangCode] ?? trans.values.first ?? '')
           .toString();
     } catch (_) {
       return '';
@@ -126,43 +205,48 @@ class _LearningScreenState extends State<LearningScreen> with TickerProviderStat
   }
 
   int _getCategoryProgress(String categoryId) {
-    final subs = _subByCat[categoryId] ?? [];
-    if (subs.isEmpty) return 0;
-    final completed = subs.where((s) => _completedSubcategories.containsKey(s['id'])).length;
-    return ((completed / subs.length) * 100).round();
+    final total = _categoryLessonCounts[categoryId] ?? 0;
+    if (total == 0) return 0;
+    final completed = _categoryCompletedCounts[categoryId] ?? 0;
+    return ((completed / total) * 100).round();
   }
 
   Color _getCategoryColor(int index) {
     final colors = [
-      const Color(0xFF4361ee),
-      const Color(0xFF7209b7),
-      const Color(0xFFf72585),
-      const Color(0xFF06ffa5),
-      const Color(0xFFffbe0b),
-      const Color(0xFF06d6a0),
+      const Color(0xFF6366F1), // Indigo
+      const Color(0xFFEC4899), // Pink
+      const Color(0xFF10B981), // Emerald
+      const Color(0xFFF59E0B), // Amber
+      const Color(0xFF8B5CF6), // Purple
+      const Color(0xFF14B8A6), // Teal
+      const Color(0xFFEF4444), // Red
+      const Color(0xFF3B82F6), // Blue
     ];
     return colors[index % colors.length];
   }
 
-  IconData _getCategoryIcon(int index) {
-    final icons = [
-      Icons.abc_rounded,
-      Icons.chat_bubble_rounded,
-      Icons.restaurant_rounded,
-      Icons.directions_car_rounded,
-      Icons.home_rounded,
-      Icons.work_rounded,
-      Icons.school_rounded,
-      Icons.favorite_rounded,
-      Icons.sports_soccer_rounded,
-      Icons.shopping_bag_rounded,
-    ];
-    return icons[index % icons.length];
+  IconData _getCategoryIcon(String? iconName) {
+    final iconMap = {
+      'abc': Icons.abc_rounded,
+      'chat': Icons.chat_bubble_rounded,
+      'food': Icons.restaurant_rounded,
+      'travel': Icons.flight_rounded,
+      'work': Icons.work_rounded,
+      'home': Icons.home_rounded,
+      'school': Icons.school_rounded,
+      'health': Icons.favorite_rounded,
+      'sports': Icons.sports_soccer_rounded,
+      'shopping': Icons.shopping_bag_rounded,
+      'music': Icons.music_note_rounded,
+      'nature': Icons.park_rounded,
+    };
+    return iconMap[iconName?.toLowerCase()] ?? Icons.category_rounded;
   }
 
   @override
   void dispose() {
     _headerAnimationController.dispose();
+    _floatingController.dispose();
     super.dispose();
   }
 
@@ -170,222 +254,260 @@ class _LearningScreenState extends State<LearningScreen> with TickerProviderStat
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+    final size = MediaQuery.of(context).size;
+
     return RefreshIndicator(
       onRefresh: _loadData,
       color: colorScheme.primary,
       child: CustomScrollView(
         physics: const BouncingScrollPhysics(),
         slivers: [
-          // Header Section
+          // Hero Header
           SliverToBoxAdapter(
             child: FadeTransition(
               opacity: _headerFadeAnimation,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+              child: Container(
+                margin: const EdgeInsets.all(20),
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      colorScheme.primary,
+                      colorScheme.primary.withOpacity(0.7),
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(28),
+                  boxShadow: [
+                    BoxShadow(
+                      color: colorScheme.primary.withOpacity(0.3),
+                      blurRadius: 20,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Progress Card
-                    Container(
-                      padding: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            colorScheme.primary,
-                            colorScheme.primary.withOpacity(0.8),
-                          ],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                        borderRadius: BorderRadius.circular(24),
-                        boxShadow: [
-                          BoxShadow(
-                            color: colorScheme.primary.withOpacity(0.3),
-                            offset: const Offset(0, 10),
-                          ),
-                        ],
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Learning Journey',
-                                    style: textTheme.titleMedium?.copyWith(
-                                      color: Colors.white.withOpacity(0.9),
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '${widget.nativeLangCode.toUpperCase()} ↔ ${widget.targetLangCode.toUpperCase()}',
-                                    style: textTheme.headlineSmall?.copyWith(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
+                              Text(
+                                'Your Learning Path',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 16,
+                                  color: Colors.white.withOpacity(0.9),
+                                  fontWeight: FontWeight.w500,
+                                ),
                               ),
-                              Container(
-                                padding: const EdgeInsets.all(12),
+                              const SizedBox(height: 8),
+                              Text(
+                                '${widget.nativeLangCode.toUpperCase()} → ${widget.targetLangCode.toUpperCase()}',
+                                style: GoogleFonts.poppins(
+                                  fontSize: 28,
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        AnimatedBuilder(
+                          animation: _floatingController,
+                          builder: (context, child) {
+                            return Transform.translate(
+                              offset: Offset(
+                                0,
+                                math.sin(_floatingController.value * 2 * math.pi) * 8,
+                              ),
+                              child: Container(
+                                padding: const EdgeInsets.all(16),
                                 decoration: BoxDecoration(
                                   color: Colors.white.withOpacity(0.2),
-                                  borderRadius: BorderRadius.circular(16),
+                                  borderRadius: BorderRadius.circular(20),
                                 ),
-                                child: Icon(
-                                  Icons.emoji_events_rounded,
+                                child: const Icon(
+                                  Icons.rocket_launch_rounded,
                                   color: Colors.white,
-                                  size: 32,
+                                  size: 36,
                                 ),
                               ),
-                            ],
-                          ),
-                          const SizedBox(height: 24),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: _buildStatCard(
-                                  icon: Icons.library_books_rounded,
-                                  label: 'Words',
-                                  value: _totalWordsLearned.toString(),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: _buildStatCard(
-                                  icon: Icons.check_circle_rounded,
-                                  label: 'Completed',
-                                  value: '${_completedSubcategories.length}',
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: _buildStatCard(
-                                  icon: Icons.category_rounded,
-                                  label: 'Topics',
-                                  value: _categories.length.toString(),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
+                            );
+                          },
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 32),
-                    Text(
-                      'Choose Your Path',
-                      style: textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: colorScheme.onBackground,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Select a category to start learning',
-                      style: textTheme.bodyMedium?.copyWith(
-                        color: colorScheme.onBackground.withOpacity(0.6),
-                      ),
+                    const SizedBox(height: 24),
+                    // Stats Row
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildStatCard(
+                            icon: Icons.book_rounded,
+                            label: 'Words',
+                            value: _totalWordsLearned.toString(),
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _buildStatCard(
+                            icon: Icons.local_fire_department_rounded,
+                            label: 'Streak',
+                            value: '$_currentStreak days',
+                            color: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _buildStatCard(
+                            icon: Icons.emoji_events_rounded,
+                            label: 'Lessons',
+                            value: _completedLessonIds.length.toString(),
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
             ),
           ),
-          // Loading/Error/Empty States
+
+          // Section Title
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Explore Categories',
+                        style: textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${_categories.length} topics to master',
+                        style: textTheme.bodyMedium?.copyWith(
+                          color: colorScheme.onBackground.withOpacity(0.6),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Loading State
           if (_loading)
             SliverFillRemaining(
               child: Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: colorScheme.primary.withOpacity(0.1),
-                        shape: BoxShape.circle,
-                      ),
+                    SizedBox(
+                      width: 60,
+                      height: 60,
                       child: CircularProgressIndicator(
-                        valueColor: AlwaysStoppedAnimation<Color>(colorScheme.primary),
+                        strokeWidth: 6,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          colorScheme.primary,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 24),
                     Text(
-                      'Loading your learning path...',
+                      'Loading your journey...',
                       style: textTheme.bodyLarge?.copyWith(
-                        color: colorScheme.onBackground.withOpacity(0.6),
+                        color: colorScheme.onBackground.withOpacity(0.7),
                       ),
                     ),
                   ],
                 ),
               ),
             )
+          // Error State
           else if (_error != null)
             SliverFillRemaining(
               child: Center(
                 child: Padding(
-                  padding: const EdgeInsets.all(24),
+                  padding: const EdgeInsets.all(32),
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Container(
-                        padding: const EdgeInsets.all(20),
+                        padding: const EdgeInsets.all(24),
                         decoration: BoxDecoration(
                           color: Colors.red.withOpacity(0.1),
                           shape: BoxShape.circle,
                         ),
                         child: Icon(
-                          Icons.error_outline_rounded,
+                          Icons.cloud_off_rounded,
                           size: 64,
                           color: Colors.red.shade400,
                         ),
                       ),
                       const SizedBox(height: 24),
                       Text(
-                        'Oops! Something went wrong',
+                        'Connection Lost',
                         style: textTheme.titleLarge?.copyWith(
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                       const SizedBox(height: 12),
                       Text(
-                        'We couldn\'t load your learning categories',
+                        'Unable to load categories. Please check your connection.',
                         style: textTheme.bodyMedium?.copyWith(
                           color: colorScheme.onBackground.withOpacity(0.6),
                         ),
                         textAlign: TextAlign.center,
                       ),
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 32),
                       ElevatedButton.icon(
                         onPressed: _loadData,
                         icon: const Icon(Icons.refresh_rounded),
-                        label: const Text('Try Again'),
+                        label: const Text('Retry'),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 32,
+                            vertical: 16,
+                          ),
+                        ),
                       ),
                     ],
                   ),
                 ),
               ),
             )
+          // Empty State
           else if (_categories.isEmpty)
               SliverFillRemaining(
                 child: Center(
                   child: Padding(
-                    padding: const EdgeInsets.all(24),
+                    padding: const EdgeInsets.all(32),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Container(
-                          padding: const EdgeInsets.all(20),
+                          padding: const EdgeInsets.all(24),
                           decoration: BoxDecoration(
                             color: colorScheme.primary.withOpacity(0.1),
                             shape: BoxShape.circle,
                           ),
                           child: Icon(
-                            Icons.folder_open_rounded,
+                            Icons.explore_off_rounded,
                             size: 64,
                             color: colorScheme.primary,
                           ),
@@ -399,7 +521,7 @@ class _LearningScreenState extends State<LearningScreen> with TickerProviderStat
                         ),
                         const SizedBox(height: 12),
                         Text(
-                          'Check back soon for new learning content',
+                          'New learning adventures are coming soon!',
                           style: textTheme.bodyMedium?.copyWith(
                             color: colorScheme.onBackground.withOpacity(0.6),
                           ),
@@ -410,29 +532,33 @@ class _LearningScreenState extends State<LearningScreen> with TickerProviderStat
                   ),
                 ),
               )
-            else
             // Categories Grid
+            else
               SliverPadding(
-                padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
                 sliver: SliverList(
                   delegate: SliverChildBuilderDelegate(
                         (context, idx) {
                       final cat = _categories[idx];
-                      final catName = _localizedName(
-                        cat['name'] as Map<String, dynamic>?,
+                      final catId = cat['id'] as String;
+                      final catName = _getLocalizedName(
+                        cat['translations'] as Map<String, dynamic>?,
                       );
-                      final subs = _subByCat[cat['id']] ?? [];
-                      final progress = _getCategoryProgress(cat['id']);
+                      final description = cat['description'] as String? ?? '';
+                      final lessonCount = _categoryLessonCounts[catId] ?? 0;
+                      final progress = _getCategoryProgress(catId);
                       final color = _getCategoryColor(idx);
-                      final icon = _getCategoryIcon(idx);
+                      final icon = _getCategoryIcon(cat['icon'] as String?);
+
                       return TweenAnimationBuilder<double>(
-                        duration: Duration(milliseconds: 300 + (idx * 100)),
+                        duration: Duration(milliseconds: 400 + (idx * 80)),
                         tween: Tween(begin: 0.0, end: 1.0),
+                        curve: Curves.easeOutCubic,
                         builder: (context, value, child) {
                           return Opacity(
                             opacity: value,
                             child: Transform.translate(
-                              offset: Offset(0, 20 * (1 - value)),
+                              offset: Offset(0, 30 * (1 - value)),
                               child: child,
                             ),
                           );
@@ -441,12 +567,13 @@ class _LearningScreenState extends State<LearningScreen> with TickerProviderStat
                           padding: const EdgeInsets.only(bottom: 16),
                           child: _buildCategoryCard(
                             context,
-                            catName: catName,
-                            subs: subs,
+                            categoryId: catId,
+                            name: catName,
+                            description: description,
+                            lessonCount: lessonCount,
                             progress: progress,
                             color: color,
                             icon: icon,
-                            categoryId: cat['id'],
                           ),
                         ),
                       );
@@ -464,31 +591,36 @@ class _LearningScreenState extends State<LearningScreen> with TickerProviderStat
     required IconData icon,
     required String label,
     required String value,
+    required Color color,
   }) {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.2),
-        borderRadius: BorderRadius.circular(12),
+        color: color.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: color.withOpacity(0.3),
+          width: 1,
+        ),
       ),
       child: Column(
         children: [
-          Icon(icon, color: Colors.white, size: 24),
+          Icon(icon, color: color, size: 24),
           const SizedBox(height: 8),
           Text(
             value,
             style: GoogleFonts.poppins(
-              fontSize: 20,
+              fontSize: 18,
               fontWeight: FontWeight.bold,
-              color: Colors.white,
+              color: color,
             ),
           ),
-          const SizedBox(height: 2),
           Text(
             label,
             style: GoogleFonts.poppins(
               fontSize: 11,
-              color: Colors.white.withOpacity(0.8),
+              color: color.withOpacity(0.8),
+              fontWeight: FontWeight.w500,
             ),
           ),
         ],
@@ -498,26 +630,35 @@ class _LearningScreenState extends State<LearningScreen> with TickerProviderStat
 
   Widget _buildCategoryCard(
       BuildContext context, {
-        required String catName,
-        required List<Map<String, dynamic>> subs,
+        required String categoryId,
+        required String name,
+        required String description,
+        required int lessonCount,
         required int progress,
         required Color color,
         required IconData icon,
-        required String categoryId,
       }) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+    final isCompleted = progress == 100;
+
+    // Debug print when building card
+    debugPrint('🎴 Building card for: $name (ID: $categoryId) - Lessons: $lessonCount');
+
     return Container(
       decoration: BoxDecoration(
         color: colorScheme.surface,
         borderRadius: BorderRadius.circular(24),
         border: Border.all(
-          color: colorScheme.outline.withOpacity(0.1),
+          color: isCompleted
+              ? color.withOpacity(0.5)
+              : colorScheme.outline.withOpacity(0.1),
+          width: isCompleted ? 2 : 1,
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
+            color: color.withOpacity(0.1),
+            blurRadius: 12,
             offset: const Offset(0, 4),
           ),
         ],
@@ -526,16 +667,41 @@ class _LearningScreenState extends State<LearningScreen> with TickerProviderStat
         color: Colors.transparent,
         child: InkWell(
           borderRadius: BorderRadius.circular(24),
-          onTap: subs.isEmpty
-              ? null
-              : () {
-            _showSubcategoriesBottomSheet(
+          onTap: lessonCount > 0
+              ? () {
+            Navigator.push(
               context,
-              catName,
-              subs,
-              color,
-              icon,
-              categoryId, // ← PASS categoryId HERE
+              MaterialPageRoute(
+                builder: (context) => CategoryLessonsScreen(
+                  categoryId: categoryId,
+                  categoryName: name,
+                  categoryColor: color,
+                  categoryIcon: icon,
+                  nativeLangCode: widget.nativeLangCode,
+                  targetLangCode: widget.targetLangCode,
+                ),
+              ),
+            ).then((_) => _loadData());
+          }
+              : () {
+            // Show debug info when tapped with 0 lessons
+            showDialog(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: const Text('Debug Info'),
+                content: Text(
+                  'Category ID: $categoryId\n'
+                      'Name: $name\n'
+                      'Lesson Count: $lessonCount\n\n'
+                      'Check console for detailed logs.',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('OK'),
+                  ),
+                ],
+              ),
             );
           },
           child: Padding(
@@ -545,19 +711,20 @@ class _LearningScreenState extends State<LearningScreen> with TickerProviderStat
               children: [
                 Row(
                   children: [
+                    // Icon Container
                     Container(
-                      padding: const EdgeInsets.all(14),
+                      padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
                           colors: [color, color.withOpacity(0.7)],
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
                         ),
-                        borderRadius: BorderRadius.circular(16),
+                        borderRadius: BorderRadius.circular(18),
                         boxShadow: [
                           BoxShadow(
                             color: color.withOpacity(0.3),
-                            blurRadius: 12,
+                            blurRadius: 8,
                             offset: const Offset(0, 4),
                           ),
                         ],
@@ -565,65 +732,104 @@ class _LearningScreenState extends State<LearningScreen> with TickerProviderStat
                       child: Icon(icon, color: Colors.white, size: 28),
                     ),
                     const SizedBox(width: 16),
+                    // Title and Lesson Count
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            catName.isNotEmpty ? catName : 'Untitled',
+                            name.isNotEmpty ? name : 'Untitled',
                             style: textTheme.titleLarge?.copyWith(
                               fontWeight: FontWeight.bold,
                             ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                           const SizedBox(height: 4),
-                          Text(
-                            '${subs.length} ${subs.length == 1 ? 'topic' : 'topics'}',
-                            style: textTheme.bodyMedium?.copyWith(
-                              color: colorScheme.onBackground.withOpacity(0.6),
-                            ),
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.play_circle_outline_rounded,
+                                size: 16,
+                                color: colorScheme.onBackground.withOpacity(0.5),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                '$lessonCount ${lessonCount == 1 ? 'lesson' : 'lessons'}',
+                                style: textTheme.bodyMedium?.copyWith(
+                                  color: colorScheme.onBackground.withOpacity(0.6),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
                     ),
-                    Icon(
-                      Icons.arrow_forward_ios_rounded,
-                      size: 18,
-                      color: colorScheme.onBackground.withOpacity(0.4),
-                    ),
+                    // Completion Badge
+                    if (isCompleted)
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: color.withOpacity(0.15),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.check_circle_rounded,
+                          color: color,
+                          size: 24,
+                        ),
+                      )
+                    else
+                      Icon(
+                        Icons.arrow_forward_ios_rounded,
+                        size: 18,
+                        color: colorScheme.onBackground.withOpacity(0.3),
+                      ),
                   ],
                 ),
+                if (description.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    description,
+                    style: textTheme.bodyMedium?.copyWith(
+                      color: colorScheme.onBackground.withOpacity(0.6),
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
                 if (progress > 0) ...[
                   const SizedBox(height: 16),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  Row(
                     children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            'Progress',
-                            style: textTheme.bodySmall?.copyWith(
-                              fontWeight: FontWeight.w600,
-                              color: colorScheme.onBackground.withOpacity(0.7),
-                            ),
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: LinearProgressIndicator(
+                            value: progress / 100,
+                            backgroundColor: colorScheme.surfaceVariant,
+                            valueColor: AlwaysStoppedAnimation<Color>(color),
+                            minHeight: 8,
                           ),
-                          Text(
-                            '$progress%',
-                            style: textTheme.bodySmall?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: color,
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
-                      const SizedBox(height: 8),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: LinearProgressIndicator(
-                          value: progress / 100,
-                          backgroundColor: colorScheme.surfaceVariant,
-                          valueColor: AlwaysStoppedAnimation<Color>(color),
-                          minHeight: 8,
+                      const SizedBox(width: 12),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: color.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          '$progress%',
+                          style: GoogleFonts.poppins(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: color,
+                          ),
                         ),
                       ),
                     ],
@@ -634,183 +840,6 @@ class _LearningScreenState extends State<LearningScreen> with TickerProviderStat
           ),
         ),
       ),
-    );
-  }
-
-  void _showSubcategoriesBottomSheet(
-      BuildContext context,
-      String categoryName,
-      List<Map<String, dynamic>> subs,
-      Color color,
-      IconData icon,
-      String categoryId, // ← ADDED categoryId PARAMETER
-      ) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) {
-        return DraggableScrollableSheet(
-          initialChildSize: 0.7,
-          minChildSize: 0.5,
-          maxChildSize: 0.95,
-          builder: (context, scrollController) {
-            return Container(
-              decoration: BoxDecoration(
-                color: colorScheme.background,
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(28),
-                ),
-              ),
-              child: Column(
-                children: [
-                  // Handle bar
-                  Container(
-                    margin: const EdgeInsets.only(top: 12),
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: colorScheme.outline.withOpacity(0.3),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  // Header
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [color, color.withOpacity(0.7)],
-                            ),
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Icon(icon, color: Colors.white, size: 24),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                categoryName,
-                                style: textTheme.titleLarge?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              Text(
-                                '${subs.length} topics to explore',
-                                style: textTheme.bodyMedium?.copyWith(
-                                  color: colorScheme.onBackground.withOpacity(0.6),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Divider(height: 1),
-                  // Subcategories list
-                  Expanded(
-                    child: ListView.builder(
-                      controller: scrollController,
-                      padding: const EdgeInsets.all(24),
-                      itemCount: subs.length,
-                      itemBuilder: (context, idx) {
-                        final sub = subs[idx];
-                        final subName = _localizedName(
-                          sub['name'] as Map<String, dynamic>?,
-                        );
-                        final isCompleted = _completedSubcategories.containsKey(sub['id']);
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: Material(
-                            color: Colors.transparent,
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(16),
-                              onTap: () {
-                                Navigator.pop(context); // close bottom sheet
-
-                                // ✅ NAVIGATE TO LESSON SCREEN
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => LessonScreen(
-                                      categoryId: categoryId,
-                                      subCategoryId: sub['id'] as String,
-                                      nativeLangCode: widget.nativeLangCode,
-                                      targetLangCode: widget.targetLangCode,
-                                    ),
-                                  ),
-                                );
-                              },
-                              child: Container(
-                                padding: const EdgeInsets.all(16),
-                                decoration: BoxDecoration(
-                                  color: colorScheme.surface,
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(
-                                    color: isCompleted
-                                        ? color.withOpacity(0.3)
-                                        : colorScheme.outline.withOpacity(0.1),
-                                    width: isCompleted ? 2 : 1,
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Container(
-                                      padding: const EdgeInsets.all(10),
-                                      decoration: BoxDecoration(
-                                        color: isCompleted
-                                            ? color.withOpacity(0.15)
-                                            : colorScheme.surfaceVariant,
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                      child: Icon(
-                                        isCompleted
-                                            ? Icons.check_circle_rounded
-                                            : Icons.radio_button_unchecked_rounded,
-                                        color: isCompleted ? color : colorScheme.onBackground.withOpacity(0.4),
-                                        size: 20,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 16),
-                                    Expanded(
-                                      child: Text(
-                                        subName.isNotEmpty ? subName : 'Untitled',
-                                        style: textTheme.bodyLarge?.copyWith(
-                                          fontWeight: FontWeight.w600,
-                                          color: isCompleted
-                                              ? colorScheme.onBackground
-                                              : colorScheme.onBackground.withOpacity(0.8),
-                                        ),
-                                      ),
-                                    ),
-                                    Icon(
-                                      Icons.arrow_forward_ios_rounded,
-                                      size: 16,
-                                      color: colorScheme.onBackground.withOpacity(0.3),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
     );
   }
 }

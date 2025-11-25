@@ -1,15 +1,65 @@
 // lib/screens/home_screen.dart
-import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'onboarding_screen.dart';
 import 'learning_screen.dart';
 import 'dictionary_screen.dart';
 import 'profile_screen.dart';
+
+// Models
+class Language {
+  final String code;
+  final String name;
+  final String nativeName;
+  final String flagEmoji;
+  final bool isActive;
+
+  Language({
+    required this.code,
+    required this.name,
+    required this.nativeName,
+    required this.flagEmoji,
+    required this.isActive,
+  });
+
+  factory Language.fromJson(Map<String, dynamic> json) {
+    return Language(
+      code: json['code'] ?? '',
+      name: json['name'] ?? json['nativeName'] ?? '',
+      nativeName: json['nativeName'] ?? json['name'] ?? '',
+      flagEmoji: json['flagEmoji'] ?? '',
+      isActive: json['isActive'] ?? false,
+    );
+  }
+}
+
+class LanguagePair {
+  final String sourceLanguage;
+  final String targetLanguage;
+  final String displayName;
+  final bool isActive;
+
+  LanguagePair({
+    required this.sourceLanguage,
+    required this.targetLanguage,
+    required this.displayName,
+    required this.isActive,
+  });
+
+  factory LanguagePair.fromJson(Map<String, dynamic> json) {
+    return LanguagePair(
+      sourceLanguage: json['sourceLanguage'] ?? '',
+      targetLanguage: json['targetLanguage'] ?? '',
+      displayName: json['displayName'] ?? '${json['sourceLanguage']} → ${json['targetLanguage']}',
+      isActive: json['isActive'] ?? false,
+    );
+  }
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,12 +69,12 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
-  late String nativeLangCode = 'en';
-  late String targetLangCode = 'ta';
+  late String _nativeLangCode = 'en';
+  late String _targetLangCode = 'es';
   bool _isLoading = true;
   int _currentIndex = 0;
-  Map<String, String> languageOptions = {'en': 'English', 'ta': 'Tamil'};
-  Map<String, Map<String, dynamic>> languageMeta = {};
+  Map<String, Language> _languages = {};
+  Map<String, LanguagePair> _languagePairs = {};
 
   late AnimationController _fabAnimationController;
   late Animation<double> _fabAnimation;
@@ -44,29 +94,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   Future<void> _initAll() async {
-    await _loadLanguageOptions();
-    await _loadLanguages();
-  }
-
-  Future<void> _loadLanguages() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedNative = prefs.getString('native_language') ?? 'en';
-    final savedTarget = prefs.getString('target_language') ?? 'ta';
-
-    nativeLangCode = savedNative;
-    targetLangCode = savedTarget;
-
-    if (!languageOptions.containsKey(nativeLangCode))
-      nativeLangCode = languageOptions.containsKey('en')
-          ? 'en'
-          : languageOptions.keys.first;
-    if (!languageOptions.containsKey(targetLangCode))
-      targetLangCode = languageOptions.containsKey('ta')
-          ? 'ta'
-          : languageOptions.keys.where((k) => k != nativeLangCode).isNotEmpty
-          ? languageOptions.keys.firstWhere((k) => k != nativeLangCode)
-          : languageOptions.keys.first;
-
+    await _loadLanguageData();
+    await _loadUserPreferences();
     if (mounted) {
       setState(() {
         _isLoading = false;
@@ -75,82 +104,142 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
   }
 
-  Future<void> _loadLanguageOptions() async {
+  Future<void> _loadLanguageData() async {
     final prefs = await SharedPreferences.getInstance();
-    final cached = prefs.getString('language_options_cache');
-    if (cached != null) {
-      try {
-        final Map<String, dynamic> parsed = Map<String, dynamic>.from(
-          jsonDecode(cached),
-        );
-        final Map<String, String> opts = {};
-        final Map<String, Map<String, dynamic>> meta = {};
-        parsed.forEach((key, value) {
-          final m = Map<String, dynamic>.from(value as Map);
-          final display = (m['name'] ?? m['nativeName'] ?? key).toString();
-          opts[key] = display;
-          meta[key] = m;
-        });
-        if (mounted)
-          setState(() {
-            languageOptions = opts;
-            languageMeta = meta;
-          });
-      } catch (_) {}
-    }
 
+    // Load from cache first
+    await _loadFromCache(prefs);
+
+    // Update from Firestore
+    await _updateFromFirestore(prefs);
+  }
+
+  Future<void> _loadFromCache(SharedPreferences prefs) async {
     try {
-      final snap = await FirebaseFirestore.instance
+      final cachedLanguages = prefs.getString('languages_cache');
+      final cachedPairs = prefs.getString('language_pairs_cache');
+
+      if (cachedLanguages != null) {
+        final decoded = jsonDecode(cachedLanguages) as Map<String, dynamic>;
+        final languages = <String, Language>{};
+        decoded.forEach((key, value) {
+          if (value is Map<String, dynamic>) {
+            languages[key] = Language.fromJson(value);
+          }
+        });
+        _languages = languages;
+      }
+
+      if (cachedPairs != null) {
+        final decoded = jsonDecode(cachedPairs) as Map<String, dynamic>;
+        final pairs = <String, LanguagePair>{};
+        decoded.forEach((key, value) {
+          if (value is Map<String, dynamic>) {
+            pairs[key] = LanguagePair.fromJson(value);
+          }
+        });
+        _languagePairs = pairs;
+      }
+    } catch (e) {
+      debugPrint('Cache loading error: $e');
+    }
+  }
+
+  Future<void> _updateFromFirestore(SharedPreferences prefs) async {
+    try {
+      // Load languages
+      final langSnapshot = await FirebaseFirestore.instance
           .collection('languages')
           .where('isActive', isEqualTo: true)
           .get();
-      final Map<String, Map<String, dynamic>> meta = {};
-      final Map<String, String> opts = {};
-      for (final d in snap.docs) {
-        final m = Map<String, dynamic>.from(d.data());
-        final display = (m['name'] ?? m['nativeName'] ?? d.id).toString();
-        meta[d.id] = m;
-        opts[d.id] = display;
-      }
-      await prefs.setString('language_options_cache', jsonEncode(meta));
-      if (mounted) {
-        setState(() {
-          languageOptions = opts;
-          languageMeta = meta;
-        });
-      }
 
-      final savedNative = prefs.getString('native_language') ?? nativeLangCode;
-      final savedTarget = prefs.getString('target_language') ?? targetLangCode;
-      if (mounted) {
-        setState(() {
-          nativeLangCode = opts.containsKey(savedNative)
-              ? savedNative
-              : (opts.containsKey('en') ? 'en' : opts.keys.first);
-          targetLangCode = opts.containsKey(savedTarget)
-              ? savedTarget
-              : (opts.keys.firstWhere(
-                (k) => k != nativeLangCode,
-            orElse: () => opts.keys.first,
-          ));
-        });
+      final languages = <String, Language>{};
+      for (final doc in langSnapshot.docs) {
+        final data = doc.data();
+        languages[doc.id] = Language.fromJson(data);
       }
+      _languages = languages;
+      await prefs.setString('languages_cache', jsonEncode(languages));
+
+      // Load language pairs
+      final pairSnapshot = await FirebaseFirestore.instance
+          .collection('languagePairs')
+          .where('isActive', isEqualTo: true)
+          .get();
+
+      final pairs = <String, LanguagePair>{};
+      for (final doc in pairSnapshot.docs) {
+        final data = doc.data();
+        final pair = LanguagePair.fromJson(data);
+        // Use source_target as key to identify pairs
+        pairs['${pair.sourceLanguage}_${pair.targetLanguage}'] = pair;
+      }
+      _languagePairs = pairs;
+      await prefs.setString('language_pairs_cache', jsonEncode(pairs));
     } catch (e) {
-      // ignore fetch errors; keep cached or defaults
+      debugPrint('Firestore loading error: $e');
     }
+  }
+
+  Future<void> _loadUserPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final savedNative = prefs.getString('native_language') ?? 'en';
+    final savedTarget = prefs.getString('target_language') ?? 'es';
+
+    // Validate saved languages exist in available options
+    String nativeCode = savedNative;
+    String targetCode = savedTarget;
+
+    if (!_languages.containsKey(nativeCode)) {
+      nativeCode = _languages.containsKey('en') ? 'en' : _languages.keys.firstOrNull ?? 'en';
+    }
+
+    // Find appropriate target language based on language pair rules
+    targetCode = _findTargetLanguageForNative(nativeCode, savedTarget);
+
+    setState(() {
+      _nativeLangCode = nativeCode;
+      _targetLangCode = targetCode;
+    });
+  }
+
+  String _findTargetLanguageForNative(String nativeCode, String preferredTarget) {
+    // Check if the preferred target is available for the native language
+    final pairKey = '${nativeCode}_${preferredTarget}';
+    if (_languagePairs.containsKey(pairKey) &&
+        _languagePairs[pairKey]!.isActive) {
+      return preferredTarget;
+    }
+
+    // Find first available target for the native language
+    for (final pair in _languagePairs.values) {
+      if (pair.sourceLanguage == nativeCode && pair.isActive) {
+        return pair.targetLanguage;
+      }
+    }
+
+    // Fallback: find any language that's not the native language
+    for (final langCode in _languages.keys) {
+      if (langCode != nativeCode) {
+        return langCode;
+      }
+    }
+
+    return 'en'; // Final fallback
   }
 
   Future<void> _saveLanguages(String native, String target) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('native_language', native);
     await prefs.setString('target_language', target);
+
     if (mounted) {
       setState(() {
-        nativeLangCode = native;
-        targetLangCode = target;
+        _nativeLangCode = native;
+        _targetLangCode = target;
       });
 
-      // Show success feedback
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Row(
@@ -170,7 +259,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   void _logout(BuildContext context) async {
-    // Show confirmation dialog
     final shouldLogout = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -204,7 +292,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     try {
       await GoogleSignIn().signOut();
       await FirebaseAuth.instance.signOut();
-      if (!context.mounted) return;
+      if (!mounted) return;
 
       Navigator.of(context).pushAndRemoveUntil(
         PageRouteBuilder(
@@ -216,7 +304,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             (route) => false,
       );
     } catch (e) {
-      if (!context.mounted) return;
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Row(
@@ -250,11 +338,39 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       ),
       backgroundColor: Theme.of(context).colorScheme.background,
       builder: (context) {
-        String selectedNative = nativeLangCode;
-        String selectedTarget = targetLangCode;
+        String selectedNative = _nativeLangCode;
+        String selectedTarget = _targetLangCode;
 
         return StatefulBuilder(
           builder: (context, setModalState) {
+            // Calculate available targets based on language pairs for the selected native
+            final availableTargets = _languagePairs.values
+                .where((pair) =>
+            pair.sourceLanguage == selectedNative &&
+                pair.isActive &&
+                pair.targetLanguage != selectedNative) // Extra safety
+                .map((pair) => _languages[pair.targetLanguage])
+                .where((lang) => lang != null) // Filter out null languages
+                .toList();
+
+            // If no valid pairs exist for this native language, fall back to all available languages
+            final fallbackTargets = _languages.entries
+                .where((entry) => entry.key != selectedNative)
+                .toList();
+
+            final useLanguagePairs = availableTargets.isNotEmpty;
+            final displayTargets = useLanguagePairs
+                ? availableTargets.map((lang) => MapEntry(lang!.code, lang)).toList()
+                : fallbackTargets;
+
+            // If current target is not in available targets, select first available
+            if (selectedNative != _nativeLangCode) { // Native was changed
+              final currentTargetExists = displayTargets.any((entry) => entry.key == selectedTarget);
+              if (!currentTargetExists && displayTargets.isNotEmpty) {
+                selectedTarget = displayTargets.first.key;
+              }
+            }
+
             return Padding(
               padding: EdgeInsets.fromLTRB(
                 24,
@@ -360,11 +476,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                               vertical: 16,
                             ),
                           ),
-                          items: languageOptions.entries.map((e) {
+                          items: _languages.entries.map((e) {
                             return DropdownMenuItem(
                               value: e.key,
                               child: Text(
-                                e.value,
+                                e.value.name,
                                 style: Theme.of(context).textTheme.bodyLarge,
                               ),
                             );
@@ -373,6 +489,28 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                             if (value != null) {
                               setModalState(() {
                                 selectedNative = value;
+                                // When native changes, update target based on language pairs
+                                final newAvailableTargets = _languagePairs.values
+                                    .where((pair) =>
+                                pair.sourceLanguage == value &&
+                                    pair.isActive &&
+                                    pair.targetLanguage != value)
+                                    .map((pair) => _languages[pair.targetLanguage])
+                                    .where((lang) => lang != null)
+                                    .toList();
+
+                                final newFallbackTargets = _languages.entries
+                                    .where((entry) => entry.key != value)
+                                    .toList();
+
+                                final useNewLanguagePairs = newAvailableTargets.isNotEmpty;
+                                final newDisplayTargets = useNewLanguagePairs
+                                    ? newAvailableTargets.map((lang) => MapEntry(lang!.code, lang)).toList()
+                                    : newFallbackTargets;
+
+                                if (newDisplayTargets.isNotEmpty) {
+                                  selectedTarget = newDisplayTargets.first.key;
+                                }
                               });
                             }
                           },
@@ -395,10 +533,63 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                         color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
                         shape: BoxShape.circle,
                       ),
-                      child: Icon(
-                        Icons.swap_vert_rounded,
-                        color: Theme.of(context).colorScheme.primary,
-                        size: 24,
+                      child: GestureDetector(
+                        onTap: () {
+                          setModalState(() {
+                            // Check if the swap would create valid pairs
+                            final newAvailableTargets = _languagePairs.values
+                                .where((pair) =>
+                            pair.sourceLanguage == selectedTarget &&
+                                pair.isActive &&
+                                pair.targetLanguage != selectedTarget)
+                                .map((pair) => _languages[pair.targetLanguage])
+                                .where((lang) => lang != null)
+                                .toList();
+
+                            final newFallbackTargets = _languages.entries
+                                .where((entry) => entry.key != selectedTarget)
+                                .toList();
+
+                            final useNewLanguagePairs = newAvailableTargets.isNotEmpty;
+                            final newDisplayTargets = useNewLanguagePairs
+                                ? newAvailableTargets.map((lang) => MapEntry(lang!.code, lang)).toList()
+                                : newFallbackTargets;
+
+                            final targetExistsInNewList = newDisplayTargets.any((entry) => entry.key == selectedNative);
+
+                            if (targetExistsInNewList) {
+                              final temp = selectedNative;
+                              selectedNative = selectedTarget;
+                              selectedTarget = temp;
+                            } else {
+                              // If swap would result in invalid target, show error
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Row(
+                                    children: [
+                                      Icon(Icons.warning_amber_rounded, color: Colors.white),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Text('This swap would create an invalid language pair'),
+                                      ),
+                                    ],
+                                  ),
+                                  backgroundColor: Colors.orange.shade600,
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  margin: const EdgeInsets.all(16),
+                                ),
+                              );
+                            }
+                          });
+                        },
+                        child: Icon(
+                          Icons.swap_vert_rounded,
+                          color: Theme.of(context).colorScheme.primary,
+                          size: 24,
+                        ),
                       ),
                     ),
                   ),
@@ -452,11 +643,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                               vertical: 16,
                             ),
                           ),
-                          items: languageOptions.entries.map((e) {
+                          items: displayTargets.map((e) { // Now uses language pair restrictions
                             return DropdownMenuItem(
                               value: e.key,
                               child: Text(
-                                e.value,
+                                e.value.name,
                                 style: Theme.of(context).textTheme.bodyLarge,
                               ),
                             );
@@ -518,8 +709,34 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                               );
                               return;
                             }
-                            _saveLanguages(selectedNative, selectedTarget);
-                            Navigator.of(context).pop();
+
+                            // Validate that this pair exists in languagePairs
+                            final pairKey = '${selectedNative}_${selectedTarget}';
+                            if (_languagePairs.containsKey(pairKey) &&
+                                _languagePairs[pairKey]!.isActive) {
+                              _saveLanguages(selectedNative, selectedTarget);
+                              Navigator.of(context).pop();
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Row(
+                                    children: [
+                                      Icon(Icons.warning_amber_rounded, color: Colors.white),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Text('This language pair is not supported'),
+                                      ),
+                                    ],
+                                  ),
+                                  backgroundColor: Colors.orange.shade600,
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  margin: const EdgeInsets.all(16),
+                                ),
+                              );
+                            }
                           },
                           style: ElevatedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(vertical: 16),
@@ -628,7 +845,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     ),
                     const SizedBox(width: 6),
                     Text(
-                      languageOptions[targetLangCode]?.substring(0, 2).toUpperCase() ?? '??',
+                      _languages[_targetLangCode]?.name.substring(0, 2).toUpperCase() ?? '??',
                       style: textTheme.labelLarge?.copyWith(
                         color: colorScheme.primary,
                         fontWeight: FontWeight.bold,
@@ -690,13 +907,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         index: _currentIndex,
         children: [
           LearningScreen(
-            nativeLangCode: nativeLangCode,
-            targetLangCode: targetLangCode,
+            nativeLangCode: _nativeLangCode,
+            targetLangCode: _targetLangCode,
           ),
           DictionaryScreen(
             user: user,
-            nativeLangCode: nativeLangCode,
-            targetLangCode: targetLangCode,
+            nativeLangCode: _nativeLangCode,
+            targetLangCode: _targetLangCode,
           ),
           ProfileScreen(user: user),
         ],
