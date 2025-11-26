@@ -570,6 +570,8 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
         return IntroductionExerciseScreen(
           exercise: exercise,
           categoryColor: widget.categoryColor,
+          nativeLangCode: widget.nativeLangCode,
+          targetLangCode: widget.targetLangCode,
           onComplete: _onItemComplete,
         );
 
@@ -619,15 +621,19 @@ class _LessonPlayerScreenState extends State<LessonPlayerScreen>
           onComplete: _onItemComplete,
         );
 
-      case 'listen':
-        return ListenLesson(
+      case 'listening':
+        return ListeningLesson(
           lesson: exercise,
+          targetLangCode: widget.targetLangCode,
+          nativeLangCode: widget.nativeLangCode,
           onComplete: _onItemComplete,
         );
 
-      case 'speak':
+      case 'speaking':
         return SpeakLesson(
           lesson: exercise,
+          targetLangCode: widget.targetLangCode,
+          nativeLangCode: widget.nativeLangCode,
           onComplete: _onItemComplete,
         );
 

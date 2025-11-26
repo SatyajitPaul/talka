@@ -40,38 +40,37 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
     _animationController.forward();
   }
 
-  Future<void> _signInWithGoogle() async {
-    setState(() => _isLoading = true);
-    try {
-      final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
-      if (googleUser == null) {
-        setState(() => _isLoading = false);
-        return;
-      }
-
-      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
-      final credential = GoogleAuthProvider.credential(
-        accessToken: googleAuth.accessToken,
-        idToken: googleAuth.idToken,
-      );
-
-      await FirebaseAuth.instance.signInWithCredential(credential);
-      if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        PageRouteBuilder(
-          pageBuilder: (context, animation, secondaryAnimation) => const HomeScreen(),
-          transitionsBuilder: (context, animation, secondaryAnimation, child) {
-            return FadeTransition(opacity: animation, child: child);
-          },
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      _showErrorSnackBar('Login failed. Please try again.');
-      setState(() => _isLoading = false);
-    }
-  }
+  // Future<void> _signInWithGoogle() async {
+  //   setState(() => _isLoading = true);
+  //   try {
+  //     final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
+  //     if (googleUser == null) {
+  //       setState(() => _isLoading = false);
+  //       return;
+  //     }
+  //
+  //     final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+  //     final credential = GoogleAuthProvider.credential(
+  //       idToken: googleAuth.idToken,
+  //     );
+  //
+  //     await FirebaseAuth.instance.signInWithCredential(credential);
+  //     if (!mounted) return;
+  //     Navigator.pushReplacement(
+  //       context,
+  //       PageRouteBuilder(
+  //         pageBuilder: (context, animation, secondaryAnimation) => const HomeScreen(),
+  //         transitionsBuilder: (context, animation, secondaryAnimation, child) {
+  //           return FadeTransition(opacity: animation, child: child);
+  //         },
+  //       ),
+  //     );
+  //   } catch (e) {
+  //     if (!mounted) return;
+  //     _showErrorSnackBar('Login failed. Please try again.');
+  //     setState(() => _isLoading = false);
+  //   }
+  // }
 
   Future<void> _signInWithEmail() async {
     if (!_formKey.currentState!.validate()) return;
@@ -426,48 +425,48 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                           const SizedBox(height: 24),
 
                           // Google Sign-In Button
-                          SizedBox(
-                            width: double.infinity,
-                            height: 56,
-                            child: OutlinedButton(
-                              onPressed: _signInWithGoogle,
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: colorScheme.onBackground,
-                                side: BorderSide(
-                                  color: colorScheme.outline.withOpacity(0.3),
-                                  width: 1.5,
-                                ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(16),
-                                ),
-                                backgroundColor: colorScheme.surface,
-                              ),
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Image.network(
-                                    'https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg',
-                                    height: 24,
-                                    width: 24,
-                                    errorBuilder: (context, error, stackTrace) {
-                                      return Icon(
-                                        Icons.g_mobiledata_outlined,
-                                        size: 28,
-                                        color: colorScheme.primary,
-                                      );
-                                    },
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Text(
-                                    'Continue with Google',
-                                    style: textTheme.titleMedium?.copyWith(
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
+                          // SizedBox(
+                          //   width: double.infinity,
+                          //   height: 56,
+                          //   child: OutlinedButton(
+                          //     onPressed: _signInWithGoogle,
+                          //     style: OutlinedButton.styleFrom(
+                          //       foregroundColor: colorScheme.onBackground,
+                          //       side: BorderSide(
+                          //         color: colorScheme.outline.withOpacity(0.3),
+                          //         width: 1.5,
+                          //       ),
+                          //       shape: RoundedRectangleBorder(
+                          //         borderRadius: BorderRadius.circular(16),
+                          //       ),
+                          //       backgroundColor: colorScheme.surface,
+                          //     ),
+                          //     child: Row(
+                          //       mainAxisAlignment: MainAxisAlignment.center,
+                          //       children: [
+                          //         Image.network(
+                          //           'https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg',
+                          //           height: 24,
+                          //           width: 24,
+                          //           errorBuilder: (context, error, stackTrace) {
+                          //             return Icon(
+                          //               Icons.g_mobiledata_outlined,
+                          //               size: 28,
+                          //               color: colorScheme.primary,
+                          //             );
+                          //           },
+                          //         ),
+                          //         const SizedBox(width: 12),
+                          //         Text(
+                          //           'Continue with Google',
+                          //           style: textTheme.titleMedium?.copyWith(
+                          //             fontWeight: FontWeight.w600,
+                          //           ),
+                          //         ),
+                          //       ],
+                          //     ),
+                          //   ),
+                          // ),
                         ],
                       ),
 

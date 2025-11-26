@@ -2,17 +2,21 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:flutter_langdetect/flutter_langdetect.dart' as langdetect;
+// import 'package:flutter_langdetect/flutter_langdetect.dart' as langdetect;
 
 class IntroductionExerciseScreen extends StatefulWidget {
   final Map<String, dynamic> exercise;
   final Color categoryColor;
+  final String nativeLangCode;
+  final String targetLangCode;
   final VoidCallback onComplete;
 
   const IntroductionExerciseScreen({
     super.key,
     required this.exercise,
     required this.categoryColor,
+    required this.nativeLangCode,
+    required this.targetLangCode,
     required this.onComplete,
   });
 
@@ -46,7 +50,7 @@ class _IntroductionExerciseScreenState extends State<IntroductionExerciseScreen>
     });
   }
 
-  Future<void> _speak(String text) async {
+  Future<void> _speak(String text, String targetLangCode) async {
     if (_isSpeaking) {
       await _flutterTts.stop();
       setState(() {
@@ -60,8 +64,8 @@ class _IntroductionExerciseScreenState extends State<IntroductionExerciseScreen>
     });
 
     // Detect language and set appropriate TTS language
-    String detectedLang = await _detectLanguage(text);
-    await _flutterTts.setLanguage(detectedLang);
+    //String detectedLang = await _detectLanguage(text);
+    await _flutterTts.setLanguage(targetLangCode);
 
     await _flutterTts.speak(text);
 
@@ -84,15 +88,15 @@ class _IntroductionExerciseScreenState extends State<IntroductionExerciseScreen>
     });
   }
 
-  Future<String> _detectLanguage(String text) async {
-    try {
-      String langCode = await langdetect.detect(text);
-      return _getTtsLanguageCode(langCode) ?? "en-US";
-    } catch (e) {
-      // Default to English if detection fails
-      return "en-US";
-    }
-  }
+  // Future<String> _detectLanguage(String text) async {
+  //   try {
+  //     String langCode = await langdetect.detect(text);
+  //     return _getTtsLanguageCode(langCode) ?? "en-US";
+  //   } catch (e) {
+  //     // Default to English if detection fails
+  //     return "en-US";
+  //   }
+  // }
 
   String? _getTtsLanguageCode(String langCode) {
     // Map detected language codes to supported TTS languages
@@ -415,7 +419,7 @@ class _IntroductionExerciseScreenState extends State<IntroductionExerciseScreen>
                   ),
                   const SizedBox(width: 12),
                   GestureDetector(
-                    onTap: () => _speak(word),
+                    onTap: () => _speak(word, widget.targetLangCode),
                     child: Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
@@ -542,7 +546,7 @@ class _IntroductionExerciseScreenState extends State<IntroductionExerciseScreen>
                     ),
                     const Spacer(),
                     GestureDetector(
-                      onTap: () => _speak(contextSentence),
+                      onTap: () => _speak(contextSentence, widget.targetLangCode),
                       child: Container(
                         padding: const EdgeInsets.all(6),
                         decoration: BoxDecoration(
